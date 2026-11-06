@@ -3,6 +3,11 @@ package com.yongyong.transit.analysis.service;
 import com.yongyong.transit.analysis.client.GbisClient;
 import com.yongyong.transit.analysis.client.GbisClient.GbisArrivals;
 import com.yongyong.transit.analysis.client.GbisClient.GbisBus;
+import com.yongyong.transit.analysis.client.PredictClient;
+import com.yongyong.transit.analysis.client.PredictClient.PredictArrival;
+import com.yongyong.transit.analysis.client.PredictClient.PredictRequest;
+import com.yongyong.transit.analysis.client.PredictClient.PredictResult;
+import com.yongyong.transit.analysis.client.PredictClient.Prediction;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.BusArrival;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
 import com.yongyong.transit.collector.client.CollectorClient;
@@ -20,11 +25,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * 버스 실시간 도착·좌석 조회.
  * 수집 노선 + 수집 정류장이고 수집 데이터가 4분 이내면 수집 서버 값을 쓰고,
  * 그 외에는 60초 캐시 → GBIS 직접 호출 순서로 조회한다.
+ * 수집 노선 + 수집 정류장은 예측 서버가 있으면 도착 시각·좌석을 예측값으로 바꾼다.
  */
 @Service
 public class BusRealtimeService {
@@ -36,6 +43,7 @@ public class BusRealtimeService {
     private final GbisClient gbisClient;
     private final GbisCallLimiter callLimiter;
     private final CollectorClient collectorClient;
+    private final PredictClient predictClient;
 
     // 정류장 ID별 마지막 GBIS 응답. 모든 이용자가 같이 쓴다.
     private final Map<String, CachedStation> cache =
@@ -44,16 +52,19 @@ public class BusRealtimeService {
     public BusRealtimeService(
         GbisClient gbisClient,
         GbisCallLimiter callLimiter,
-        CollectorClient collectorClient
+        CollectorClient collectorClient,
+        PredictClient predictClient
     ) {
         this.gbisClient = gbisClient;
         this.callLimiter = callLimiter;
         this.collectorClient = collectorClient;
+        this.predictClient = predictClient;
     }
 
     /**
      * 수집 서버의 최신 도착정보를 한 번에 받아 둔다. 분석 요청 1번당 1번만 호출한다.
      * 4분 이내에 수집된 값만 남기고, 수집 서버 오류면 빈 값을 돌려준다.
+     * 수집 노선·정류장 목록(예측 대상 판단용)은 신선도와 상관없이 함께 담는다.
      */
     public CollectorSnapshot loadCollectorSnapshot(OffsetDateTime now) {
         try {
@@ -67,8 +78,11 @@ public class BusRealtimeService {
             }
 
             Map<String, List<BusArrival>> byStation = new HashMap<>();
+            Set<String> collectedStationIds = new HashSet<>();
 
             for (JsonNode item : collectorClient.getArrivals()) {
+                collectedStationIds.add(item.path("station_id").asText());
+
                 String routeId = routeIdByName.get(
                     item.path("route_name").asText()
                 );
@@ -105,7 +119,11 @@ public class BusRealtimeService {
                     ));
             }
 
-            return new CollectorSnapshot(byStation);
+            return new CollectorSnapshot(
+                byStation,
+                new HashSet<>(routeIdByName.values()),
+                collectedStationIds
+            );
 
         } catch (RuntimeException e) {
             return CollectorSnapshot.empty();
@@ -155,16 +173,112 @@ public class BusRealtimeService {
             }
         }
 
-        List<BusArrival> upcoming = arrivals.stream()
-            .filter(arrival -> !arrival.arrivalAt().isBefore(now))
-            .sorted(Comparator.comparing(BusArrival::arrivalAt))
-            .toList();
+        List<BusArrival> upcoming = upcoming(
+            applyPredictions(stationId, upcoming(arrivals, now), snapshot, now),
+            now
+        );
 
         OffsetDateTime dataBasisAt = basisTimes.stream()
             .min(Comparator.naturalOrder())
             .orElse(null);
 
         return new StationArrivals(upcoming, dataBasisAt, delayed);
+    }
+
+    private List<BusArrival> upcoming(
+        List<BusArrival> arrivals,
+        OffsetDateTime now
+    ) {
+        return arrivals.stream()
+            .filter(arrival -> !arrival.arrivalAt().isBefore(now))
+            .sorted(Comparator.comparing(BusArrival::arrivalAt))
+            .toList();
+    }
+
+    /**
+     * 수집 노선 + 수집 정류장이면 (노선, 정류장)마다 예측 서버를 호출해
+     * 차량번호가 같은 버스의 도착 시각·좌석을 예측값으로 바꾼다.
+     * 예측 서버가 없거나 실패하면 실시간 값을 그대로 둔다.
+     */
+    private List<BusArrival> applyPredictions(
+        String stationId,
+        List<BusArrival> arrivals,
+        CollectorSnapshot snapshot,
+        OffsetDateTime now
+    ) {
+        if (!predictClient.isEnabled()
+            || !snapshot.collectedStationIds().contains(stationId)) {
+            return arrivals;
+        }
+
+        Map<String, List<BusArrival>> byRoute = arrivals.stream()
+            .filter(arrival -> snapshot.collectedRouteIds()
+                .contains(arrival.routeId()))
+            .collect(Collectors.groupingBy(BusArrival::routeId));
+
+        Map<BusArrival, BusArrival> replaced = new HashMap<>();
+
+        byRoute.forEach((routeId, routeArrivals) -> {
+            PredictResult result;
+
+            try {
+                result = predictClient.predict(new PredictRequest(
+                    routeId,
+                    stationId,
+                    now,
+                    routeArrivals.stream()
+                        .map(arrival -> new PredictArrival(
+                            arrival.plateNo(),
+                            arrival.arrivalAt(),
+                            arrival.remainSeats()
+                        ))
+                        .toList()
+                ));
+            } catch (RuntimeException e) {
+                return;
+            }
+
+            Map<String, Prediction> byPlate = new HashMap<>();
+            result.predictions().forEach(prediction ->
+                byPlate.put(prediction.plateNo(), prediction)
+            );
+
+            for (BusArrival arrival : routeArrivals) {
+                Prediction prediction = byPlate.get(arrival.plateNo());
+
+                if (prediction != null) {
+                    replaced.put(
+                        arrival,
+                        predicted(arrival, prediction, result.modelVersion())
+                    );
+                }
+            }
+        });
+
+        return arrivals.stream()
+            .map(arrival -> replaced.getOrDefault(arrival, arrival))
+            .toList();
+    }
+
+    private BusArrival predicted(
+        BusArrival arrival,
+        Prediction prediction,
+        String modelVersion
+    ) {
+        boolean hasSeats = prediction.predictedRemainSeats() != null;
+
+        return new BusArrival(
+            arrival.routeId(),
+            arrival.routeLabel(),
+            arrival.plateNo(),
+            prediction.predictedBusArrivalAt() != null
+                ? prediction.predictedBusArrivalAt()
+                : arrival.arrivalAt(),
+            hasSeats ? prediction.predictedRemainSeats() : arrival.remainSeats(),
+            hasSeats ? SeatType.PREDICTED : arrival.seatType(),
+            arrival.dataBasisAt(),
+            modelVersion
+        );
     }
 
     private GbisLookup lookupGbis(
@@ -260,10 +374,12 @@ public class BusRealtimeService {
     }
 
     public record CollectorSnapshot(
-        Map<String, List<BusArrival>> byStation
+        Map<String, List<BusArrival>> byStation,
+        Set<String> collectedRouteIds,
+        Set<String> collectedStationIds
     ) {
         public static CollectorSnapshot empty() {
-            return new CollectorSnapshot(Map.of());
+            return new CollectorSnapshot(Map.of(), Set.of(), Set.of());
         }
 
         public List<BusArrival> arrivals(String stationId) {

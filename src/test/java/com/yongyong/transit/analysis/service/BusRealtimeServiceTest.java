@@ -3,6 +3,10 @@ package com.yongyong.transit.analysis.service;
 import com.yongyong.transit.analysis.client.GbisClient;
 import com.yongyong.transit.analysis.client.GbisClient.GbisArrivals;
 import com.yongyong.transit.analysis.client.GbisClient.GbisBus;
+import com.yongyong.transit.analysis.client.PredictClient;
+import com.yongyong.transit.analysis.client.PredictClient.PredictRequest;
+import com.yongyong.transit.analysis.client.PredictClient.PredictResult;
+import com.yongyong.transit.analysis.client.PredictClient.Prediction;
 import com.yongyong.transit.analysis.service.BusRealtimeService.CollectorSnapshot;
 import com.yongyong.transit.analysis.service.BusRealtimeService.StationArrivals;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.BusArrival;
@@ -10,6 +14,7 @@ import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
 import com.yongyong.transit.collector.client.CollectorClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.OffsetDateTime;
@@ -17,6 +22,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,18 +42,21 @@ class BusRealtimeServiceTest {
 
     private GbisClient gbisClient;
     private CollectorClient collectorClient;
+    private PredictClient predictClient;
     private BusRealtimeService service;
 
     @BeforeEach
     void setUp() {
         gbisClient = mock(GbisClient.class);
         collectorClient = mock(CollectorClient.class);
+        predictClient = mock(PredictClient.class);
         when(gbisClient.hasKey()).thenReturn(true);
 
         service = new BusRealtimeService(
             gbisClient,
             new GbisCallLimiter(1000),
-            collectorClient
+            collectorClient,
+            predictClient
         );
     }
 
@@ -190,6 +199,112 @@ class BusRealtimeServiceTest {
 
         assertThat(service.loadCollectorSnapshot(NOW).arrivals(STATION))
             .isEmpty();
+    }
+
+    @Test
+    void 예측서버가_없으면_호출하지_않고_실시간값_그대로() {
+        givenCollector("2026-11-04T07:28:00+09:00");
+
+        StationArrivals result = service.getArrivals(
+            STATION, Set.of(ROUTE_5005),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        verify(predictClient, never()).predict(any());
+        assertThat(result.arrivals().get(0).seatType()).isEqualTo(SeatType.OBSERVED);
+    }
+
+    @Test
+    void 수집노선_수집정류장은_예측값으로_바꾸고_PREDICTED() {
+        givenCollector("2026-11-04T07:28:00+09:00");
+        when(predictClient.isEnabled()).thenReturn(true);
+        when(predictClient.predict(any())).thenReturn(new PredictResult(
+            List.of(new Prediction(
+                "C-5005", OffsetDateTime.parse("2026-11-04T07:39:00+09:00"), 3
+            )),
+            "v1"
+        ));
+
+        StationArrivals result = service.getArrivals(
+            STATION, Set.of(ROUTE_5005),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        ArgumentCaptor<PredictRequest> request =
+            ArgumentCaptor.forClass(PredictRequest.class);
+        verify(predictClient).predict(request.capture());
+        assertThat(request.getValue().gbisRouteId()).isEqualTo(ROUTE_5005);
+        assertThat(request.getValue().boardStationId()).isEqualTo(STATION);
+        assertThat(request.getValue().arrivals()).hasSize(1);
+        assertThat(request.getValue().arrivals().get(0).remainSeats()).isEqualTo(7);
+
+        BusArrival arrival = result.arrivals().get(0);
+        assertThat(arrival.arrivalAt())
+            .isEqualTo(OffsetDateTime.parse("2026-11-04T07:39:00+09:00"));
+        assertThat(arrival.remainSeats()).isEqualTo(3);
+        assertThat(arrival.seatType()).isEqualTo(SeatType.PREDICTED);
+        assertThat(arrival.modelVersion()).isEqualTo("v1");
+    }
+
+    @Test
+    void 수집시간_외에도_수집노선_수집정류장이면_GBIS값으로_예측() {
+        givenCollector("2026-11-04T06:00:00+09:00");
+        givenGbis(gbisArrivals());
+        when(predictClient.isEnabled()).thenReturn(true);
+        when(predictClient.predict(any())).thenReturn(new PredictResult(
+            List.of(new Prediction("G-5005-1", null, 2)), "v1"
+        ));
+
+        StationArrivals result = service.getArrivals(
+            STATION, Set.of(ROUTE_5005),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        // 예측된 차량만 교체, 도착 시각 예측이 없으면 원래 값 유지
+        assertThat(result.arrivals().get(0).seatType()).isEqualTo(SeatType.PREDICTED);
+        assertThat(result.arrivals().get(0).remainSeats()).isEqualTo(2);
+        assertThat(result.arrivals().get(0).arrivalAt())
+            .isEqualTo(OffsetDateTime.parse("2026-11-04T07:39:00+09:00"));
+        assertThat(result.arrivals().get(1).seatType()).isEqualTo(SeatType.NONE);
+    }
+
+    @Test
+    void 수집대상이_아닌_노선이나_정류장은_예측하지_않음() {
+        givenCollector("2026-11-04T07:28:00+09:00");
+        givenGbis(gbisArrivals());
+        when(predictClient.isEnabled()).thenReturn(true);
+
+        // 5003A는 수집 노선이 아님
+        service.getArrivals(
+            STATION, Set.of(ROUTE_5003A),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        // 다른 정류장은 수집 정류장이 아님
+        when(gbisClient.getStationArrivals("228000999")).thenReturn(gbisArrivals());
+        service.getArrivals(
+            "228000999", Set.of(ROUTE_5005),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        verify(predictClient, never()).predict(any());
+    }
+
+    @Test
+    void 예측서버_실패면_실시간값_그대로_OBSERVED() {
+        givenCollector("2026-11-04T07:28:00+09:00");
+        when(predictClient.isEnabled()).thenReturn(true);
+        when(predictClient.predict(any()))
+            .thenThrow(new IllegalStateException("timeout"));
+
+        StationArrivals result = service.getArrivals(
+            STATION, Set.of(ROUTE_5005),
+            service.loadCollectorSnapshot(NOW), NOW
+        );
+
+        assertThat(result.arrivals().get(0).remainSeats()).isEqualTo(7);
+        assertThat(result.arrivals().get(0).seatType()).isEqualTo(SeatType.OBSERVED);
+        assertThat(result.arrivals().get(0).modelVersion()).isNull();
     }
 
     private void givenCollector(String collectedAt) {
