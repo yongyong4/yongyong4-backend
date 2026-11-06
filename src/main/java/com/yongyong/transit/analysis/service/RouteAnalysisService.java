@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -261,7 +262,9 @@ public class RouteAnalysisService {
             || request.routes() == null
             || request.routes().isEmpty()
             || request.routes().stream().anyMatch(route ->
-                route == null || route.segments() == null)) {
+                route == null
+                    || route.segments() == null
+                    || route.segments().stream().anyMatch(Objects::isNull))) {
             throw new ResponseStatusException(
                 HttpStatus.BAD_REQUEST,
                 "후보 경로 정보가 올바르지 않습니다."
@@ -270,7 +273,7 @@ public class RouteAnalysisService {
     }
 
     /**
-     * 요청에 matchStatus가 있으면 그대로 쓰고, 없으면 직접 판단한다.
+     * 요청에 matchStatus가 있으면 우선하고, 없으면 직접 판단한다.
      * 버스가 아니면 NA, 승차 정류장 ID가 있고 경기 노선(ID가 2로 시작)이 있으면 MATCHED, 그 외 FAILED.
      */
     private String matchStatus(RouteSegment segment) {
@@ -278,9 +281,11 @@ public class RouteAnalysisService {
             return NA;
         }
 
+        // 요청이 FAILED면 따르고, MATCHED여도 조회에 필요한 값이 있을 때만 인정
         if (segment.matchStatus() != null
-            && !segment.matchStatus().isBlank()) {
-            return MATCHED.equals(segment.matchStatus()) ? MATCHED : FAILED;
+            && !segment.matchStatus().isBlank()
+            && !MATCHED.equals(segment.matchStatus())) {
+            return FAILED;
         }
 
         boolean hasStation = segment.startLocalStationId() != null

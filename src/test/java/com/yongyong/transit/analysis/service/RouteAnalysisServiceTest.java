@@ -205,6 +205,19 @@ class RouteAnalysisServiceTest {
     }
 
     @Test
+    void 요청이_MATCHED여도_정류장ID가_없으면_FAILED로_처리() {
+        RouteSegment noStation = new RouteSegment(
+            1, "BUS", 39, "동백2차", null, "MATCHED",
+            List.of(option("5005", ROUTE_5005))
+        );
+
+        AnalysisResponse response = analyze(route(0, 58, noStation));
+
+        assertThat(response.routes().get(0).analyzable()).isFalse();
+        verify(realtime, never()).getArrivals(any(), any(), any(), any());
+    }
+
+    @Test
     void 같은_정류장은_여러_경로에서_한번만_조회() {
         givenStation(DONGBAEK, false,
             arrival(ROUTE_5005, "5005", "07:45", 10),
@@ -244,6 +257,13 @@ class RouteAnalysisServiceTest {
             .isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> service.analyze(new AnalysisRequest(List.of()), NOW))
             .isInstanceOf(ResponseStatusException.class);
+
+        List<RouteSegment> withNull = new ArrayList<>();
+        withNull.add(null);
+
+        assertThatThrownBy(() -> service.analyze(
+            new AnalysisRequest(List.of(new RouteInput(0, 10, withNull))), NOW
+        )).isInstanceOf(ResponseStatusException.class);
     }
 
     private AnalysisResponse analyze(RouteInput... routes) {
