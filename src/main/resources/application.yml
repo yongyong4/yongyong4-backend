@@ -24,3 +24,7 @@ odsay:
 
 kakao:
   rest-api-key: ${KAKAO_REST_API_KEY:}
+
+springdoc:
+  swagger-ui:
+    tags-sorter: alpha

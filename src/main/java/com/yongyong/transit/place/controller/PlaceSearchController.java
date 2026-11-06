@@ -3,6 +3,8 @@ package com.yongyong.transit.place.controller;
 
 import com.yongyong.transit.place.service.PlaceSearchService;
 import com.yongyong.transit.place.service.PlaceSearchService.PlaceSearchResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -10,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+@Tag(name = "1. 장소·경로 탐색")
 @RestController
 @RequestMapping("/api/v1/places")
 public class PlaceSearchController {
@@ -22,6 +25,7 @@ public class PlaceSearchController {
         this.placeSearchService = placeSearchService;
     }
 
+    @Operation(summary = "장소 검색")
     @GetMapping("/search")
     public PlaceSearchResponse searchPlaces(
         @RequestParam String query,
