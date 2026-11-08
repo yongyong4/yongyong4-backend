@@ -307,6 +307,12 @@ class AlternativeServiceTest {
         // 07:37 정류장 → 07:42 탑승 → 08:27 → 08:31
         assertThat(detourView.totalMinIfBoard()).isEqualTo(61);
 
+        // KEEP 5003A(3석, 주의) → 놓쳤을 때 72분. 우회 61 < 다른 수단 65 < KEEP 72
+        assertThat(types(response)).containsExactly(
+            StrategyType.DETOUR, StrategyType.OTHER_MODE, StrategyType.KEEP
+        );
+        assertThat(response.strategies().get(0).recommended()).isTrue();
+
         StrategyView otherMode = only(response, StrategyType.OTHER_MODE);
         assertThat(otherMode.title()).isEqualTo("지하철로 가기");
         assertThat(otherMode.strategyRiskStage()).isEqualTo(Stage.OK);
@@ -341,7 +347,7 @@ class AlternativeServiceTest {
         );
 
         assertThat(types(response))
-            .containsExactly(StrategyType.KEEP, StrategyType.ALT_ROUTE);
+            .containsExactlyInAnyOrder(StrategyType.KEEP, StrategyType.ALT_ROUTE);
         verify(routeStations, never()).routeStations(eq(ROUTE_5003A), any(), any());
     }
 

@@ -23,10 +23,13 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import static com.yongyong.transit.analysis.service.RouteAnalysisService.seconds;
 
@@ -155,6 +158,8 @@ public class StrategyService {
             strategies.add(view(candidate, now));
         }
 
+        strategies = rank(strategies);
+
         // 호출 한도에 닿아 캐시만 쓴 조회가 있으면 지연으로 표시
         return new StrategyResponse(
             seconds(RouteAnalysisService.dataBasisAt(store.arrivals())),
@@ -178,6 +183,11 @@ public class StrategyService {
             ? riskStage(boardPlan.stage())
             : Stage.OK;
 
+        Integer totalIfBoard = totalMin(now, boardPlan.arrivalAt());
+        Integer totalIfMiss = boardPlan.hasBus()
+            ? totalMin(now, missPlan.arrivalAt())
+            : totalIfBoard;
+
         return new StrategyView(
             false,
             candidate.type() == StrategyType.KEEP,
@@ -188,11 +198,9 @@ public class StrategyService {
             candidate.moveToY(),
             candidate.extraWalkMin(),
             stage,
-            totalMin(now, boardPlan.arrivalAt()),
-            boardPlan.hasBus()
-                ? totalMin(now, missPlan.arrivalAt())
-                : totalMin(now, boardPlan.arrivalAt()),
-            null,
+            totalIfBoard,
+            totalIfMiss,
+            comparisonValueMin(stage, totalIfBoard, totalIfMiss),
             seconds(boardPlan.arrivalAt()),
             firstBus == null ? null : firstBus.remainSeats(),
             firstBus == null ? null : firstBus.seatType(),
@@ -203,6 +211,53 @@ public class StrategyService {
             new TripRoute(tripSegments(boardPlan)),
             analysis(boardPlan)
         );
+    }
+
+    /**
+     * 비교값: 단계가 가능이면 탔을 때 시간, 주의·위험이면 놓쳤을 때 시간.
+     * 다음 버스 정보가 없어 놓쳤을 때 시간이 없으면 탔을 때 시간 (단계는 그대로).
+     * 버스 없는 경로는 단계가 가능이라 경로 예상 소요가 된다.
+     */
+    static Integer comparisonValueMin(
+        Stage stage,
+        Integer totalIfBoard,
+        Integer totalIfMiss
+    ) {
+        if (stage == Stage.OK || totalIfMiss == null) {
+            return totalIfBoard;
+        }
+
+        return totalIfMiss;
+    }
+
+    /**
+     * 전략 순위: 비교값 → 탔을 때 시간 → 추가 도보 순으로 작은 것, 그래도 같으면 KEEP 먼저.
+     * 정렬한 뒤 종류마다 가장 앞의 1개만 남기고 (KEEP은 항상 1개), 1위를 추천한다.
+     */
+    static List<StrategyView> rank(List<StrategyView> strategies) {
+        Comparator<Integer> nullsLast =
+            Comparator.nullsLast(Comparator.naturalOrder());
+
+        List<StrategyView> sorted = strategies.stream()
+            .sorted(Comparator
+                .comparing(StrategyView::comparisonValueMin, nullsLast)
+                .thenComparing(StrategyView::totalMinIfBoard, nullsLast)
+                .thenComparingInt(StrategyView::extraWalkMin)
+                .thenComparing(strategy -> !strategy.isCurrent()))
+            .toList();
+
+        Set<StrategyType> seen = EnumSet.noneOf(StrategyType.class);
+        List<StrategyView> ranked = new ArrayList<>();
+
+        for (StrategyView strategy : sorted) {
+            if (seen.add(strategy.strategyType())) {
+                ranked.add(ranked.isEmpty()
+                    ? strategy.withRecommended(true)
+                    : strategy);
+            }
+        }
+
+        return ranked;
     }
 
     // 정보 없음(UNKNOWN)은 주의로 본다
@@ -408,7 +463,7 @@ public class StrategyService {
 
     /**
      * 전략 카드 하나.
-     * comparisonValueMin·recommended는 전략 비교에서, reasons는 근거 문장 생성에서 채운다.
+     * reasons는 근거 문장 생성에서 채운다.
      * missIntervalMin은 마을버스 배차 간격용으로 지금은 항상 null.
      */
     public record StrategyView(
@@ -434,6 +489,15 @@ public class StrategyService {
         TripRoute route,
         List<SegmentView> analysis
     ) {
+        public StrategyView withRecommended(boolean value) {
+            return new StrategyView(
+                value, isCurrent, strategyType, title, moveToName, moveToX,
+                moveToY, extraWalkMin, strategyRiskStage, totalMinIfBoard,
+                totalMinIfMiss, comparisonValueMin, expectedArrivalAt,
+                remainSeats, seatType, busArrivalAt, nextBusArrivalAt,
+                missIntervalMin, reasons, route, analysis
+            );
+        }
     }
 
     public record TripRoute(

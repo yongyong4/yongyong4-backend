@@ -103,6 +103,9 @@ class StrategyServiceTest {
         assertThat(keep.expectedArrivalAt()).isEqualTo(at("08:24"));
         // 놓치면 07:59 → 08:38 → 08:42
         assertThat(keep.totalMinIfMiss()).isEqualTo(72);
+        // 주의 단계라 놓쳤을 때 시간이 비교값, 대안이 없으니 추천
+        assertThat(keep.comparisonValueMin()).isEqualTo(72);
+        assertThat(keep.recommended()).isTrue();
         assertThat(keep.busArrivalAt()).isEqualTo(at("07:41"));
         assertThat(keep.nextBusArrivalAt()).isEqualTo(at("07:59"));
         assertThat(keep.remainSeats()).isEqualTo(3);
@@ -171,6 +174,7 @@ class StrategyServiceTest {
         assertThat(keep.totalMinIfBoard()).isEqualTo(50);
         assertThat(keep.totalMinIfMiss()).isNull();
         assertThat(keep.nextBusArrivalAt()).isNull();
+        assertThat(keep.comparisonValueMin()).isEqualTo(50);
     }
 
     @Test
@@ -246,6 +250,7 @@ class StrategyServiceTest {
         assertThat(keep.strategyRiskStage()).isEqualTo(Stage.OK);
         assertThat(keep.totalMinIfBoard()).isEqualTo(64);
         assertThat(keep.totalMinIfMiss()).isEqualTo(64);
+        assertThat(keep.comparisonValueMin()).isEqualTo(64);
         assertThat(keep.busArrivalAt()).isNull();
         assertThat(keep.analysis()).isEmpty();
         assertThat(keep.route().segments()).hasSize(3);
