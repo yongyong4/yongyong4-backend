@@ -22,7 +22,7 @@ import java.util.List;
 /**
  * GBIS 조회.
  * - 정류장 도착정보: 그 정류장에 오는 노선 전체와 노선마다 다음 버스 2대
- * - 노선 경유 정류장 목록, 정류장 경유 노선 목록 (정적 정보, 대안 생성용)
+ * - 노선 경유 정류장 목록, 정류장 경유 노선 목록, 주변 정류장 (정적 정보, 대안 생성용)
  */
 @Component
 public class GbisClient {
@@ -35,6 +35,9 @@ public class GbisClient {
 
     private static final String STATION_ROUTE_URL =
         "https://apis.data.go.kr/6410000/busstationservice/v2/getBusStationViaRouteListv2";
+
+    private static final String STATION_AROUND_URL =
+        "https://apis.data.go.kr/6410000/busstationservice/v2/getBusStationAroundListv2";
 
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
 
@@ -76,10 +79,19 @@ public class GbisClient {
         );
     }
 
+    // 좌표 주변 정류장 (가까운 순, 반경 약 500m)
+    public List<AroundStation> getStationsAround(double x, double y) {
+        return parseStationsAround(fetch(
+            STATION_AROUND_URL,
+            "x", String.valueOf(x),
+            "y", String.valueOf(y)
+        ));
+    }
+
+    // params: 이름, 값, 이름, 값 ...
     private String fetch(
         String url,
-        String paramName,
-        String paramValue
+        String... params
     ) {
         if (!hasKey()) {
             throw new IllegalStateException("GBIS_API_KEY is not configured");
@@ -89,12 +101,16 @@ public class GbisClient {
             ? apiKey
             : URLEncoder.encode(apiKey, StandardCharsets.UTF_8);
 
+        StringBuilder query = new StringBuilder();
+
+        for (int i = 0; i < params.length; i += 2) {
+            query.append(params[i]).append('=')
+                .append(URLEncoder.encode(params[i + 1], StandardCharsets.UTF_8))
+                .append('&');
+        }
+
         URI uri = URI.create(
-            url
-                + "?" + paramName + "="
-                + URLEncoder.encode(paramValue, StandardCharsets.UTF_8)
-                + "&format=json&serviceKey="
-                + key
+            url + "?" + query + "format=json&serviceKey=" + key
         );
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -200,6 +216,27 @@ public class GbisClient {
         }
 
         return routes;
+    }
+
+    List<AroundStation> parseStationsAround(String body) {
+        List<AroundStation> stations = new ArrayList<>();
+
+        for (JsonNode item : items(readResponse(body), "busStationAroundList")) {
+            String stationId = text(item, "stationId");
+            Integer distance = integer(item, "distance");
+
+            if (stationId == null || distance == null) {
+                continue;
+            }
+
+            stations.add(new AroundStation(
+                stationId,
+                text(item, "stationName"),
+                distance
+            ));
+        }
+
+        return stations;
     }
 
     /**
@@ -356,6 +393,14 @@ public class GbisClient {
     public record StationRoute(
         String routeId,
         String routeLabel
+    ) {
+    }
+
+    // distance: 조회 좌표에서 m
+    public record AroundStation(
+        String stationId,
+        String name,
+        int distance
     ) {
     }
 }

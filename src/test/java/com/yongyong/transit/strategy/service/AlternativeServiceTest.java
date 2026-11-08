@@ -16,6 +16,7 @@ import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
 import com.yongyong.transit.route.walking.service.WalkingRouteService;
 import com.yongyong.transit.route.walking.service.WalkingRouteService.WalkingRouteResponse;
+import com.yongyong.transit.strategy.service.RouteStationService.CommonRoute;
 import com.yongyong.transit.strategy.service.StrategyService.Location;
 import com.yongyong.transit.strategy.service.StrategyService.Mode;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyRequest;
@@ -38,6 +39,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -52,6 +54,8 @@ class AlternativeServiceTest {
     private static final String FAR_STOP = "228000160";
     private static final String OTHER_STOP = "228000300";
     private static final String GANGNAM = "121000009";
+    // 강남역의 다른 승강장 (같은 이름, 다른 ID)
+    private static final String GANGNAM_B = "121000010";
 
     private static final String ROUTE_5003A = "228000431";
     private static final String ROUTE_5005 = "228000175";
@@ -73,6 +77,11 @@ class AlternativeServiceTest {
         walking = mock(WalkingRouteService.class);
         when(realtime.loadCollectorSnapshot(any()))
             .thenReturn(CollectorSnapshot.empty());
+        // 기본: 다른 승강장 없음
+        when(routeStations.sameStations(any(), any(), any()))
+            .thenAnswer(invocation -> List.of(
+                invocation.<RouteStation>getArgument(0).stationId()
+            ));
 
         // 실제 조회처럼 요청한 노선만 돌려준다
         when(realtime.getArrivals(anyString(), any(), any(), any(), any()))
@@ -156,6 +165,35 @@ class AlternativeServiceTest {
         verify(routeStations, never()).routeStations(eq(ROUTE_5005), any(), any());
         // 같은 정류장이라 우회로는 만들지 않는다
         assertThat(types(response)).doesNotContain(StrategyType.DETOUR);
+    }
+
+    @Test
+    void 하차_정류장의_다른_승강장에_서는_노선도_대체_노선으로_만듦() {
+        given5005AtOtherPlatform(List.of(
+            station(DONGBAEK, "동백2차", 10, null, null),
+            station(GANGNAM_B, "강남역", 35, null, null)
+        ));
+
+        StrategyView alt = only(strategies(List.of(), null), StrategyType.ALT_ROUTE);
+
+        assertThat(alt.title()).isEqualTo("5005번으로 바꾸기");
+        assertThat(alt.totalMinIfBoard()).isEqualTo(69);
+
+        TripSegment bus = alt.route().segments().get(1);
+        assertThat(bus.alightStationId()).isEqualTo(GANGNAM_B);
+        assertThat(bus.alightName()).isEqualTo("강남역");
+    }
+
+    @Test
+    void 다른_승강장인데_반대_방향이면_대체_노선에서_제외() {
+        // 강남역(다른 승강장)을 동백보다 먼저 지난다 → 반대 방향
+        given5005AtOtherPlatform(List.of(
+            station(GANGNAM_B, "강남역", 5, null, null),
+            station(DONGBAEK, "동백2차", 10, null, null)
+        ));
+
+        assertThat(types(strategies(List.of(), null)))
+            .doesNotContain(StrategyType.ALT_ROUTE);
     }
 
     @Test
@@ -273,7 +311,7 @@ class AlternativeServiceTest {
 
         assertThat(types(strategies(List.of(), null)))
             .doesNotContain(StrategyType.BACKTRACK);
-        verify(routeStations, never()).routeStations(eq(ROUTE_5003A), any(), any());
+        verify(walking, never()).search(anyDouble(), anyDouble(), anyDouble(), anyDouble(), any());
     }
 
     @Test
@@ -348,7 +386,7 @@ class AlternativeServiceTest {
 
         assertThat(types(response))
             .containsExactlyInAnyOrder(StrategyType.KEEP, StrategyType.ALT_ROUTE);
-        verify(routeStations, never()).routeStations(eq(ROUTE_5003A), any(), any());
+        verify(walking, never()).search(anyDouble(), anyDouble(), anyDouble(), anyDouble(), any());
     }
 
     @Test
@@ -437,8 +475,27 @@ class AlternativeServiceTest {
     }
 
     private void givenCommonRoutes(StationRoute... routes) {
-        when(routeStations.commonRoutes(eq(DONGBAEK), eq(GANGNAM), any(), any(), any()))
-            .thenReturn(List.of(routes));
+        when(routeStations.commonRoutes(eq(DONGBAEK), eq(List.of(GANGNAM)), any(), any(), any()))
+            .thenReturn(List.of(routes).stream()
+                .map(route -> new CommonRoute(route.routeId(), route.routeLabel(), GANGNAM))
+                .toList());
+    }
+
+    // 강남역에 다른 승강장(GANGNAM_B)이 있고, 5005는 그 승강장에 선다
+    private void given5005AtOtherPlatform(List<RouteStation> stations5005) {
+        givenRouteStations5003A();
+        doReturn(List.of(GANGNAM, GANGNAM_B)).when(routeStations).sameStations(
+            eq(station(GANGNAM, "강남역", 30, 127.0276, 37.4979)), any(), any()
+        );
+        when(routeStations.commonRoutes(
+            eq(DONGBAEK), eq(List.of(GANGNAM, GANGNAM_B)), any(), any(), any()
+        )).thenReturn(List.of(new CommonRoute(ROUTE_5005, "5005", GANGNAM_B)));
+        when(routeStations.routeStations(eq(ROUTE_5005), any(), any()))
+            .thenReturn(stations5005);
+        givenArrivals(DONGBAEK,
+            arrival(ROUTE_5003A, "5003A", "A1", "07:41", 3),
+            arrival(ROUTE_5005, "5005", "B1", "07:45", 10)
+        );
     }
 
     // 5003A: 먼 정류장(10) → 동백쥬네브(11) → 동백2차(12) → … → 강남역(30)

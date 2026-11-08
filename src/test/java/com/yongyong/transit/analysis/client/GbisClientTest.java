@@ -1,5 +1,6 @@
 package com.yongyong.transit.analysis.client;
 
+import com.yongyong.transit.analysis.client.GbisClient.AroundStation;
 import com.yongyong.transit.analysis.client.GbisClient.GbisArrivals;
 import com.yongyong.transit.analysis.client.GbisClient.GbisBus;
 import com.yongyong.transit.analysis.client.GbisClient.RouteStation;
@@ -117,6 +118,25 @@ class GbisClientTest {
 
         assertThat(result).containsExactly(
             new StationRoute("228000174", "5000")
+        );
+    }
+
+    @Test
+    void 주변_정류장_파싱_거리없는_항목은_제외() {
+        List<AroundStation> result = client.parseStationsAround("""
+            {"response":{
+              "msgHeader":{"resultCode":0},
+              "msgBody":{"busStationAroundList":[
+                {"stationId":121000010,"stationName":"신분당선강남역(중)","distance":16},
+                {"stationId":121000009,"stationName":"신분당선강남역(중)","distance":102},
+                {"stationId":121000999,"stationName":"거리 없음"}
+              ]}
+            }}
+            """);
+
+        assertThat(result).containsExactly(
+            new AroundStation("121000010", "신분당선강남역(중)", 16),
+            new AroundStation("121000009", "신분당선강남역(중)", 102)
         );
     }
 

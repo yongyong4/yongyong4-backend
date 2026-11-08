@@ -1,10 +1,12 @@
 package com.yongyong.transit.strategy.service;
 
 import com.yongyong.transit.analysis.client.GbisClient;
+import com.yongyong.transit.analysis.client.GbisClient.AroundStation;
 import com.yongyong.transit.analysis.client.GbisClient.RouteStation;
 import com.yongyong.transit.analysis.client.GbisClient.StationRoute;
 import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.GbisCallLimiter;
+import com.yongyong.transit.strategy.service.RouteStationService.CommonRoute;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +15,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -25,6 +28,7 @@ class RouteStationServiceTest {
     private static final String ROUTE_5003A = "228000431";
     private static final String DONGBAEK = "228000172";
     private static final String GANGNAM = "121000009";
+    private static final String GANGNAM_B = "121000010";
     private static final OffsetDateTime NOW =
         OffsetDateTime.parse("2026-11-04T07:30:00+09:00");
 
@@ -143,12 +147,69 @@ class RouteStationServiceTest {
             new StationRoute("228000175", "5005")
         ));
 
-        List<StationRoute> result = service.commonRoutes(
-            DONGBAEK, GANGNAM, Set.of(ROUTE_5003A), CallBudget.of(20), NOW
+        List<CommonRoute> result = service.commonRoutes(
+            DONGBAEK, List.of(GANGNAM), Set.of(ROUTE_5003A), CallBudget.of(20), NOW
         );
 
-        assertThat(result).containsExactly(new StationRoute("228000175", "5005"));
+        assertThat(result)
+            .containsExactly(new CommonRoute("228000175", "5005", GANGNAM));
         verify(gbisClient, times(2)).getStationRoutes(anyString());
+    }
+
+    @Test
+    void 대체노선은_다른_승강장에_서는_노선도_그_승강장으로_찾음() {
+        when(gbisClient.getStationRoutes(DONGBAEK)).thenReturn(List.of(
+            new StationRoute(ROUTE_5003A, "5003A"),
+            new StationRoute("228000182", "5003B"),
+            new StationRoute("228000175", "5005")
+        ));
+        when(gbisClient.getStationRoutes(GANGNAM)).thenReturn(List.of(
+            new StationRoute(ROUTE_5003A, "5003A"),
+            new StationRoute("228000175", "5005")
+        ));
+        when(gbisClient.getStationRoutes(GANGNAM_B)).thenReturn(List.of(
+            new StationRoute("228000182", "5003B"),
+            new StationRoute("228000175", "5005")
+        ));
+
+        List<CommonRoute> result = service.commonRoutes(
+            DONGBAEK, List.of(GANGNAM, GANGNAM_B), Set.of(ROUTE_5003A),
+            CallBudget.of(20), NOW
+        );
+
+        // 원래 승강장에 서는 노선은 원래 승강장으로
+        assertThat(result).containsExactly(
+            new CommonRoute("228000175", "5005", GANGNAM),
+            new CommonRoute("228000182", "5003B", GANGNAM_B)
+        );
+    }
+
+    @Test
+    void 같은_정류장은_300m_안에서_이름이_같은_정류장() {
+        when(gbisClient.getStationsAround(127.02857, 37.49578)).thenReturn(List.of(
+            new AroundStation(GANGNAM, "신분당선강남역(중)", 0),
+            new AroundStation("121000974", "강남역우리은행", 20),
+            new AroundStation(GANGNAM_B, "신분당선강남역(중) ", 102),
+            new AroundStation("121000099", "신분당선강남역(중)", 350)
+        ));
+        RouteStation gangnam =
+            new RouteStation(GANGNAM, "신분당선강남역(중)", 57, 127.02857, 37.49578);
+
+        assertThat(service.sameStations(gangnam, CallBudget.of(20), NOW))
+            .containsExactly(GANGNAM, GANGNAM_B);
+
+        // 하루 동안 캐시
+        service.sameStations(gangnam, CallBudget.of(20), NOW.plusHours(1));
+        verify(gbisClient, times(1)).getStationsAround(127.02857, 37.49578);
+    }
+
+    @Test
+    void 좌표가_없으면_같은_정류장은_자기_자신만() {
+        RouteStation noLocation = new RouteStation(GANGNAM, "강남", 57, null, null);
+
+        assertThat(service.sameStations(noLocation, CallBudget.of(20), NOW))
+            .containsExactly(GANGNAM);
+        verify(gbisClient, never()).getStationsAround(anyDouble(), anyDouble());
     }
 
     @Test

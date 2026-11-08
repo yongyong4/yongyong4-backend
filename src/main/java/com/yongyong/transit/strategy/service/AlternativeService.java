@@ -14,6 +14,7 @@ import com.yongyong.transit.analysis.service.SegmentAnalyzer.SegmentResult;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
 import com.yongyong.transit.route.walking.service.WalkingRouteService;
 import com.yongyong.transit.route.walking.service.WalkingRouteService.WalkingRouteResponse;
+import com.yongyong.transit.strategy.service.RouteStationService.CommonRoute;
 import com.yongyong.transit.strategy.service.StrategyService.Location;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyType;
 import org.springframework.stereotype.Service;
@@ -34,7 +35,8 @@ import java.util.concurrent.TimeUnit;
  * 대안 생성.
  * 고른 경로(재평가는 남은 구간)의 첫 MATCHED 버스 구간을 바꾸거나 다른 후보 경로를 가져와
  * 경로 따라가기로 계산한다. 순서: 대체 노선 → 거슬러타기 → 우회 → 다른 교통수단.
- * - 대체 노선: 같은 승차·하차 정류장을 지나는 다른 경기 노선 (GBIS 노선 정보). 항상 만든다
+ * - 대체 노선: 같은 승차·하차 정류장(하차는 같은 이름의 다른 승강장 포함)을 지나는
+ *   다른 경기 노선 (GBIS 노선 정보). 항상 만든다
  * - 거슬러타기: 같은 노선의 앞 정류장. 현재 위치가 있고 버스에 타 있지 않을 때만.
  *   도보 시간은 카카오 도보 API (실패하면 직선거리로 대신)
  * - 우회·다른 교통수단: 다른 후보 경로(출발지 기준) 그대로. 버스에 타 있지 않을 때만
@@ -95,6 +97,8 @@ public class AlternativeService {
 
     /**
      * 대체 노선: 승차·하차 정류장을 모두 지나는 다른 노선으로 버스만 바꾼다.
+     * 하차 정류장은 같은 이름의 다른 승강장(반경 300m)도 같은 곳으로 보고,
+     * 그 뒤 도보 구간은 그대로 둔다.
      * 탑승 시간은 다른 후보 경로에 같은 구간·노선이 있으면 그 값,
      * 없으면 정류장 수 × 2분과 원래 탑승 시간 중 큰 값.
      */
@@ -115,17 +119,34 @@ public class AlternativeService {
             }
         });
 
-        List<StationRoute> routes = routeStationService.commonRoutes(
-            board, alight, exclude, context.store().budget(), context.now()
+        List<String> alights = sameStations(context, busIndex);
+
+        List<CommonRoute> routes = routeStationService.commonRoutes(
+            board, alights, exclude, context.store().budget(), context.now()
         );
 
-        for (StationRoute route : routes.stream().limit(MAX_PER_TYPE).toList()) {
-            int rideMin = altRideMin(context, bus, route.routeId());
+        int count = 0;
+
+        for (CommonRoute route : routes) {
+            if (count >= MAX_PER_TYPE) {
+                break;
+            }
+
+            Integer rideMin = altRideMin(
+                context, bus, route.routeId(), route.alightStationId()
+            );
+
+            // 다른 승강장인데 방향을 확인 못 하면 뺀다
+            if (rideMin == null) {
+                continue;
+            }
+
+            count++;
 
             RouteSegment changed = new RouteSegment(
                 bus.segmentIndex(), BUS, rideMin,
                 bus.startName(), bus.endName(),
-                board, alight, null,
+                board, route.alightStationId(), null,
                 List.of(new BusOption(route.routeLabel(), route.routeId()))
             );
 
@@ -147,14 +168,44 @@ public class AlternativeService {
         return result;
     }
 
-    private int altRideMin(Context context, RouteSegment bus, String routeId) {
+    // 원래 하차 정류장과 같은 이름의 다른 승강장 (원래 노선의 정류장 목록에서 이름·좌표를 찾는다)
+    private List<String> sameStations(Context context, int busIndex) {
+        RouteSegment bus = context.route().segments().get(busIndex);
+        String alight = bus.endLocalStationId();
+        SegmentResult keepBus = context.keepPlan().segments().get(busIndex).result();
+        String routeId = keepBus.routeId() != null
+            ? keepBus.routeId()
+            : routeAnalysisService.gbisRouteIds(bus).iterator().next();
+
+        return routeStationService
+            .routeStations(routeId, context.store().budget(), context.now())
+            .stream()
+            .filter(station -> station.stationId().equals(alight))
+            .findFirst()
+            .map(station -> routeStationService.sameStations(
+                station, context.store().budget(), context.now()
+            ))
+            .orElse(List.of(alight));
+    }
+
+    /**
+     * 대체 노선 탑승 시간(분).
+     * 다른 승강장(alightId가 원래 하차 정류장이 아님)인데 그 노선이 승차 → 하차 순서로
+     * 지나는지 확인 못 하면 null (반대 방향 승강장일 수 있음).
+     */
+    private Integer altRideMin(
+        Context context,
+        RouteSegment bus,
+        String routeId,
+        String alightId
+    ) {
         // 다른 후보 경로에 같은 구간·노선이 있으면 경로 API 시간
         for (RouteInput route : context.alternativeRoutes()) {
             for (RouteSegment segment : route.segments()) {
                 if (BUS.equals(segment.mode())
                     && segment.durationMin() != null
                     && Objects.equals(segment.startLocalStationId(), bus.startLocalStationId())
-                    && Objects.equals(segment.endLocalStationId(), bus.endLocalStationId())
+                    && Objects.equals(segment.endLocalStationId(), alightId)
                     && segment.busOptions() != null
                     && segment.busOptions().stream().anyMatch(option ->
                         option != null && routeId.equals(option.localRouteId()))) {
@@ -168,20 +219,20 @@ public class AlternativeService {
             routeId, context.store().budget(), context.now()
         );
         Integer boardSeq = RouteStationService.boardSeq(
-            stations, bus.startLocalStationId(), bus.endLocalStationId()
+            stations, bus.startLocalStationId(), alightId
         );
 
         Integer alightSeq = boardSeq == null
             ? null
             : stations.stream()
-                .filter(station -> station.stationId().equals(bus.endLocalStationId()))
+                .filter(station -> station.stationId().equals(alightId))
                 .map(RouteStation::seq)
                 .filter(seq -> seq > boardSeq)
                 .min(Integer::compare)
                 .orElse(null);
 
         if (alightSeq == null) {
-            return originalMin;
+            return alightId.equals(bus.endLocalStationId()) ? originalMin : null;
         }
 
         return Math.max((alightSeq - boardSeq) * MIN_PER_STATION, originalMin);

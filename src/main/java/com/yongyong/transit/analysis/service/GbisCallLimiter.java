@@ -18,6 +18,7 @@ public class GbisCallLimiter {
     public static final String ARRIVAL = "ARRIVAL";
     public static final String ROUTE_STATION = "ROUTE_STATION";
     public static final String STATION_ROUTE = "STATION_ROUTE";
+    public static final String STATION_AROUND = "STATION_AROUND";
 
     private static final double ALLOW_RATIO = 0.8;
 

@@ -1,6 +1,7 @@
 package com.yongyong.transit.strategy.service;
 
 import com.yongyong.transit.analysis.client.GbisClient;
+import com.yongyong.transit.analysis.client.GbisClient.AroundStation;
 import com.yongyong.transit.analysis.client.GbisClient.RouteStation;
 import com.yongyong.transit.analysis.client.GbisClient.StationRoute;
 import com.yongyong.transit.analysis.service.CallBudget;
@@ -10,6 +11,8 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,7 +22,7 @@ import java.util.stream.Collectors;
 
 /**
  * 노선·정류장 정보 조회 (대안 생성용 정적 정보).
- * - 노선 경유 정류장 목록(거슬러타기), 정류장 경유 노선 목록(대체 노선)
+ * - 노선 경유 정류장 목록(거슬러타기), 정류장 경유 노선 목록·주변 정류장(대체 노선)
  * - 모든 이용자가 같이 쓰는 1일 캐시, 매일 04:00(KST) 기준으로 새로 받는다
  * - 캐시에 없을 때만 하루 한도 + 요청당 한도(budget)를 지키며 GBIS를 부른다
  * - 실패하면 남은 캐시를, 그것도 없으면 빈 목록을 돌려준다 (그 전략만 건너뜀)
@@ -30,12 +33,17 @@ public class RouteStationService {
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
     private static final int CACHE_RESET_HOUR = 4;
 
+    // 같은 정류장의 다른 승강장으로 볼 거리
+    static final int SAME_STATION_METERS = 300;
+
     private final GbisClient gbisClient;
     private final GbisCallLimiter callLimiter;
 
     private final Map<String, Cached<List<RouteStation>>> routeStationCache =
         new ConcurrentHashMap<>();
     private final Map<String, Cached<List<StationRoute>>> stationRouteCache =
+        new ConcurrentHashMap<>();
+    private final Map<String, Cached<List<AroundStation>>> aroundCache =
         new ConcurrentHashMap<>();
 
     public RouteStationService(
@@ -79,32 +87,82 @@ public class RouteStationService {
     }
 
     /**
-     * 대체 노선 후보: 승차 정류장과 하차 정류장을 모두 지나는 노선 (excludeRouteIds 제외).
-     * 노선마다 정류장 목록을 받지 않고 정류장 경유 노선 2번 조회로 거른다.
+     * 같은 정류장으로 볼 정류장 ID (자기 자신 먼저).
+     * 큰 정류장은 승강장마다 ID가 따로 있어(예: 신분당선강남역(중) 22009·22010)
+     * 반경 300m 안에서 이름이 같은 정류장을 같이 본다.
+     * station(이름·좌표)이 없으면 자기 자신만.
      */
-    public List<StationRoute> commonRoutes(
+    public List<String> sameStations(
+        RouteStation station,
+        CallBudget budget,
+        OffsetDateTime now
+    ) {
+        List<String> result = new ArrayList<>();
+        result.add(station.stationId());
+
+        if (station.name() == null || station.x() == null || station.y() == null) {
+            return result;
+        }
+
+        String name = station.name().trim();
+
+        lookup(
+            aroundCache,
+            station.stationId(),
+            GbisCallLimiter.STATION_AROUND,
+            () -> gbisClient.getStationsAround(station.x(), station.y()),
+            budget,
+            now
+        ).stream()
+            .filter(around -> around.distance() <= SAME_STATION_METERS)
+            .filter(around -> around.name() != null
+                && around.name().trim().equals(name))
+            .map(AroundStation::stationId)
+            .filter(id -> !result.contains(id))
+            .forEach(result::add);
+
+        return result;
+    }
+
+    /**
+     * 대체 노선 후보: 승차 정류장과 하차 정류장(같은 정류장의 다른 승강장 포함)을
+     * 모두 지나는 노선 (excludeRouteIds 제외). 노선마다 실제 하차 정류장을 같이 준다.
+     * 노선마다 정류장 목록을 받지 않고 정류장 경유 노선 조회로 거른다.
+     */
+    public List<CommonRoute> commonRoutes(
         String boardStationId,
-        String alightStationId,
+        List<String> alightStationIds,
         Set<String> excludeRouteIds,
         CallBudget budget,
         OffsetDateTime now
     ) {
         List<StationRoute> boardRoutes =
             stationRoutes(boardStationId, budget, now);
+        List<CommonRoute> result = new ArrayList<>();
 
         if (boardRoutes.isEmpty()) {
-            return List.of();
+            return result;
         }
 
-        Set<String> alightRouteIds = stationRoutes(alightStationId, budget, now)
-            .stream()
-            .map(StationRoute::routeId)
-            .collect(Collectors.toSet());
+        Set<String> added = new HashSet<>(excludeRouteIds);
 
-        return boardRoutes.stream()
-            .filter(route -> alightRouteIds.contains(route.routeId()))
-            .filter(route -> !excludeRouteIds.contains(route.routeId()))
-            .toList();
+        for (String alightStationId : alightStationIds) {
+            Set<String> alightRouteIds = stationRoutes(alightStationId, budget, now)
+                .stream()
+                .map(StationRoute::routeId)
+                .collect(Collectors.toSet());
+
+            for (StationRoute route : boardRoutes) {
+                if (alightRouteIds.contains(route.routeId())
+                    && added.add(route.routeId())) {
+                    result.add(new CommonRoute(
+                        route.routeId(), route.routeLabel(), alightStationId
+                    ));
+                }
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -196,6 +254,13 @@ public class RouteStationService {
         return now.atZoneSameInstant(KST)
             .minusHours(CACHE_RESET_HOUR)
             .toLocalDate();
+    }
+
+    public record CommonRoute(
+        String routeId,
+        String routeLabel,
+        String alightStationId
+    ) {
     }
 
     private record Cached<T>(
