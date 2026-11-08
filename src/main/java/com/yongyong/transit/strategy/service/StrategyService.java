@@ -56,15 +56,18 @@ public class StrategyService {
     private final RouteAnalysisService routeAnalysisService;
     private final BusRealtimeService busRealtimeService;
     private final AlternativeService alternativeService;
+    private final ReasonService reasonService;
 
     public StrategyService(
         RouteAnalysisService routeAnalysisService,
         BusRealtimeService busRealtimeService,
-        AlternativeService alternativeService
+        AlternativeService alternativeService,
+        ReasonService reasonService
     ) {
         this.routeAnalysisService = routeAnalysisService;
         this.busRealtimeService = busRealtimeService;
         this.alternativeService = alternativeService;
+        this.reasonService = reasonService;
     }
 
     public StrategyResponse strategies(StrategyRequest request) {
@@ -95,7 +98,8 @@ public class StrategyService {
      * route: 남은 구간만 넣어도 된다 (재평가)
      * alightAtBySegment: 지하철 구간 번호 → 사용자 하차 시각
      * baseTime: 경로를 따라가기 시작하는 시각 (처음 요청은 지금, 버스 탑승 중이면 하차 예정 시각)
-     * 두 모드 모두 실시간 조회를 하고 요청당 GBIS 20회까지 쓴다 (재평가는 근거 문장만 다름).
+     * 두 모드 모두 실시간 조회를 하고 요청당 GBIS 20회까지 쓴다.
+     * 재평가는 근거 문장에 LLM을 부르지 않고 문장 틀만 쓴다.
      */
     public StrategyResponse evaluate(
         RouteInput route,
@@ -158,7 +162,7 @@ public class StrategyService {
             strategies.add(view(candidate, now));
         }
 
-        strategies = rank(strategies);
+        strategies = reasonService.withReasons(rank(strategies), mode, now);
 
         // 호출 한도에 닿아 캐시만 쓴 조회가 있으면 지연으로 표시
         return new StrategyResponse(
@@ -463,7 +467,7 @@ public class StrategyService {
 
     /**
      * 전략 카드 하나.
-     * reasons는 근거 문장 생성에서 채운다.
+     * reasons는 근거 문장 생성(ReasonService)에서 채운다.
      * missIntervalMin은 마을버스 배차 간격용으로 지금은 항상 null.
      */
     public record StrategyView(
@@ -496,6 +500,16 @@ public class StrategyService {
                 totalMinIfMiss, comparisonValueMin, expectedArrivalAt,
                 remainSeats, seatType, busArrivalAt, nextBusArrivalAt,
                 missIntervalMin, reasons, route, analysis
+            );
+        }
+
+        public StrategyView withReasons(List<String> value) {
+            return new StrategyView(
+                recommended, isCurrent, strategyType, title, moveToName, moveToX,
+                moveToY, extraWalkMin, strategyRiskStage, totalMinIfBoard,
+                totalMinIfMiss, comparisonValueMin, expectedArrivalAt,
+                remainSeats, seatType, busArrivalAt, nextBusArrivalAt,
+                missIntervalMin, value, route, analysis
             );
         }
     }

@@ -20,6 +20,7 @@ import com.yongyong.transit.strategy.service.StrategyService.StrategyResponse;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyType;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyView;
 import com.yongyong.transit.strategy.service.StrategyService.TripSegment;
+import com.yongyong.transit.common.client.OpenAiClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -69,7 +70,8 @@ class StrategyServiceTest {
                 analysis,
                 mock(RouteStationService.class),
                 mock(WalkingRouteService.class)
-            )
+            ),
+            new ReasonService(new OpenAiClient("", "", ""))
         );
     }
 
