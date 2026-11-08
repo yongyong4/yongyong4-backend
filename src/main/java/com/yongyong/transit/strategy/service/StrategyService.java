@@ -1,0 +1,425 @@
+package com.yongyong.transit.strategy.service;
+
+import com.yongyong.transit.analysis.service.BusRealtimeService.StationArrivals;
+import com.yongyong.transit.analysis.service.CallBudget;
+import com.yongyong.transit.analysis.service.RouteAnalysisService;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.PlannedSegment;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteAnalysis;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.RoutePlan;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteSegment;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
+import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
+import com.yongyong.transit.analysis.service.SegmentAnalyzer.SegmentResult;
+import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import static com.yongyong.transit.analysis.service.RouteAnalysisService.seconds;
+
+/**
+ * 전략 비교·추천.
+ * 고른 경로를 처음부터 끝까지 따라가며 KEEP(그대로 타기) 전략을 만든다.
+ * 재평가는 HTTP 대신 evaluate()를 REEVALUATION 모드로 바로 호출한다.
+ */
+@Service
+public class StrategyService {
+
+    private static final ZoneOffset KST = ZoneOffset.ofHours(9);
+    private static final int CALL_LIMIT_PER_REQUEST = 20;
+
+    private static final String BUS = "BUS";
+    private static final String WALK = "WALK";
+    private static final String SUBWAY = "SUBWAY";
+
+    private static final String FORMAT_ERROR = "선택한 경로 정보가 올바르지 않습니다.";
+    private static final String NOT_ANALYZABLE = "분석할 수 없는 경로입니다.";
+    private static final String ALIGHT_ERROR = "하차 시각이 올바르지 않습니다.";
+
+    private final RouteAnalysisService routeAnalysisService;
+
+    public StrategyService(RouteAnalysisService routeAnalysisService) {
+        this.routeAnalysisService = routeAnalysisService;
+    }
+
+    public StrategyResponse strategies(StrategyRequest request) {
+        return strategies(
+            request,
+            OffsetDateTime.now(KST).truncatedTo(ChronoUnit.SECONDS)
+        );
+    }
+
+    StrategyResponse strategies(StrategyRequest request, OffsetDateTime now) {
+        validate(request);
+
+        return evaluate(
+            request.selectedRoute(),
+            request.alternativeRoutes() == null
+                ? List.of()
+                : request.alternativeRoutes(),
+            alightAtBySegment(request, now),
+            request.currentLocation(),
+            now,
+            Mode.STRATEGY,
+            now
+        );
+    }
+
+    /**
+     * 전략 계산 본체.
+     * route: 남은 구간만 넣어도 된다 (재평가)
+     * alightAtBySegment: 지하철 구간 번호 → 사용자 하차 시각
+     * baseTime: 경로를 따라가기 시작하는 시각 (처음 요청은 지금, 버스 탑승 중이면 하차 예정 시각)
+     * 두 모드 모두 실시간 조회를 하고 요청당 GBIS 20회까지 쓴다 (재평가는 근거 문장만 다름).
+     */
+    public StrategyResponse evaluate(
+        RouteInput route,
+        List<RouteInput> alternativeRoutes,
+        Map<Integer, OffsetDateTime> alightAtBySegment,
+        Location currentLocation,
+        OffsetDateTime baseTime,
+        Mode mode,
+        OffsetDateTime now
+    ) {
+        CallBudget budget = CallBudget.of(CALL_LIMIT_PER_REQUEST);
+
+        Map<String, StationArrivals> arrivalsByStation =
+            routeAnalysisService.loadArrivals(List.of(route), now, budget);
+
+        RoutePlan boardPlan = routeAnalysisService.plan(
+            route, arrivalsByStation, alightAtBySegment, false, baseTime, now
+        );
+
+        if (boardPlan.hasBus() && !boardPlan.anyMatched()) {
+            throw new ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                NOT_ANALYZABLE
+            );
+        }
+
+        RoutePlan missPlan = routeAnalysisService.plan(
+            route, arrivalsByStation, alightAtBySegment, true, baseTime, now
+        );
+
+        List<StrategyView> strategies = new ArrayList<>();
+        strategies.add(keep(boardPlan, missPlan, now));
+
+        return new StrategyResponse(
+            seconds(RouteAnalysisService.dataBasisAt(arrivalsByStation)),
+            RouteAnalysisService.dataDelayed(arrivalsByStation, now),
+            routeAnalysisService.toAnalysis(route, boardPlan),
+            strategies
+        );
+    }
+
+    // 고른 경로를 그대로 타는 전략
+    private StrategyView keep(
+        RoutePlan boardPlan,
+        RoutePlan missPlan,
+        OffsetDateTime now
+    ) {
+        SegmentResult firstBus = boardPlan.firstBus();
+
+        // 버스 구간이 없으면(지하철만) 분석 없이 다른 교통수단처럼 OK
+        Stage stage = boardPlan.hasBus()
+            ? riskStage(boardPlan.stage())
+            : Stage.OK;
+
+        String title = firstBus == null || firstBus.routeLabel() == null
+            ? "그대로 가기"
+            : "그대로 " + firstBus.routeLabel() + "번 타기";
+
+        return new StrategyView(
+            false,
+            true,
+            StrategyType.KEEP,
+            title,
+            null,
+            null,
+            null,
+            0,
+            stage,
+            totalMin(now, boardPlan.arrivalAt()),
+            boardPlan.hasBus()
+                ? totalMin(now, missPlan.arrivalAt())
+                : totalMin(now, boardPlan.arrivalAt()),
+            null,
+            seconds(boardPlan.arrivalAt()),
+            firstBus == null ? null : firstBus.remainSeats(),
+            firstBus == null ? null : firstBus.seatType(),
+            firstBus == null ? null : seconds(firstBus.predictedBusArrivalAt()),
+            firstBus == null ? null : seconds(firstBus.nextBusArrivalAt()),
+            null,
+            List.of(),
+            new TripRoute(tripSegments(boardPlan)),
+            analysis(boardPlan)
+        );
+    }
+
+    // 정보 없음(UNKNOWN)은 주의로 본다
+    private Stage riskStage(Stage stage) {
+        return stage == null || stage == Stage.UNKNOWN ? Stage.CAUTION : stage;
+    }
+
+    private Integer totalMin(OffsetDateTime now, OffsetDateTime arrivalAt) {
+        return arrivalAt == null
+            ? null
+            : (int) Duration.between(now, arrivalAt).toMinutes();
+    }
+
+    /**
+     * POST /trips에 그대로 보낼 전체 구간.
+     * segmentIndex는 0부터, seq는 1부터 다시 매긴다.
+     * 도보 구간 이름은 앞뒤 구간에서 가져오고 처음·끝은 출발지·도착지.
+     */
+    private List<TripSegment> tripSegments(RoutePlan plan) {
+        List<PlannedSegment> segments = plan.segments();
+        List<TripSegment> result = new ArrayList<>();
+
+        for (int i = 0; i < segments.size(); i++) {
+            PlannedSegment planned = segments.get(i);
+            RouteSegment segment = planned.segment();
+            boolean walk = WALK.equals(segment.mode());
+
+            String boardName = walk
+                ? (i == 0 ? "출발지" : segments.get(i - 1).segment().endName())
+                : segment.startName();
+
+            String alightName = walk
+                ? (i == segments.size() - 1
+                    ? "도착지"
+                    : segments.get(i + 1).segment().startName())
+                : segment.endName();
+
+            result.add(new TripSegment(
+                i,
+                i + 1,
+                segment.mode(),
+                gbisRouteId(planned),
+                routeLabel(planned),
+                walk ? null : segment.startLocalStationId(),
+                walk ? null : segment.endLocalStationId(),
+                boardName,
+                alightName,
+                planned.matchStatus(),
+                seconds(planned.plannedStartAt()),
+                seconds(planned.plannedEndAt()),
+                walk ? segment.durationMin() : null,
+                seconds(planned.userAlightAt())
+            ));
+        }
+
+        return result;
+    }
+
+    // 버스 구간 분석 결과. 구간 번호는 route.segments 위치
+    private List<SegmentView> analysis(RoutePlan plan) {
+        List<SegmentView> views = new ArrayList<>();
+
+        for (int i = 0; i < plan.segments().size(); i++) {
+            PlannedSegment planned = plan.segments().get(i);
+
+            if (planned.isBus()) {
+                views.add(planned.view().withSegmentIndex(i));
+            }
+        }
+
+        return views;
+    }
+
+    // 실제로 탈 버스의 노선 ID. 도착 정보가 없으면 경기 노선 중 첫 번째
+    private String gbisRouteId(PlannedSegment planned) {
+        if (planned.result() != null && planned.result().routeId() != null) {
+            return planned.result().routeId();
+        }
+
+        if (!BUS.equals(planned.segment().mode())) {
+            return null;
+        }
+
+        return routeAnalysisService.gbisRouteIds(planned.segment())
+            .stream()
+            .findFirst()
+            .orElse(null);
+    }
+
+    private String routeLabel(PlannedSegment planned) {
+        if (planned.result() != null && planned.result().routeLabel() != null) {
+            return planned.result().routeLabel();
+        }
+
+        List<BusOption> options = planned.segment().busOptions();
+
+        return options == null || options.isEmpty() || options.get(0) == null
+            ? null
+            : options.get(0).busNo();
+    }
+
+    private void validate(StrategyRequest request) {
+        if (request == null
+            || !validRoute(request.selectedRoute())
+            || request.selectedRoute().segments().isEmpty()
+            || (request.alternativeRoutes() != null
+                && !request.alternativeRoutes()
+                    .stream()
+                    .allMatch(this::validRoute))) {
+            throw new ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                FORMAT_ERROR
+            );
+        }
+    }
+
+    private boolean validRoute(RouteInput route) {
+        return route != null
+            && route.segments() != null
+            && route.segments().stream().allMatch(segment ->
+                segment != null && segment.mode() != null);
+    }
+
+    /**
+     * 하차 시각 수정: 고른 경로의 지하철 구간이고, 시각이 지금 이후여야 한다.
+     */
+    private Map<Integer, OffsetDateTime> alightAtBySegment(
+        StrategyRequest request,
+        OffsetDateTime now
+    ) {
+        Map<Integer, OffsetDateTime> result = new HashMap<>();
+
+        if (request.alightUpdates() == null) {
+            return result;
+        }
+
+        for (AlightUpdate update : request.alightUpdates()) {
+            boolean subway = update != null
+                && update.segmentIndex() != null
+                && request.selectedRoute()
+                    .segments()
+                    .stream()
+                    .anyMatch(segment ->
+                        Objects.equals(segment.segmentIndex(), update.segmentIndex())
+                            && SUBWAY.equals(segment.mode()));
+
+            if (!subway
+                || update.userAlightAt() == null
+                || update.userAlightAt().isBefore(now)) {
+                throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    ALIGHT_ERROR
+                );
+            }
+
+            result.put(update.segmentIndex(), update.userAlightAt());
+        }
+
+        return result;
+    }
+
+    public enum Mode {
+        STRATEGY,
+        REEVALUATION
+    }
+
+    public enum StrategyType {
+        KEEP,
+        BACKTRACK,
+        DETOUR,
+        ALT_ROUTE,
+        OTHER_MODE
+    }
+
+    public record StrategyRequest(
+        RouteInput selectedRoute,
+        List<RouteInput> alternativeRoutes,
+        List<AlightUpdate> alightUpdates,
+        Location currentLocation
+    ) {
+    }
+
+    public record AlightUpdate(
+        Integer segmentIndex,
+        OffsetDateTime userAlightAt
+    ) {
+    }
+
+    // 현재 위치 (경도 x, 위도 y)
+    public record Location(
+        Double x,
+        Double y
+    ) {
+    }
+
+    public record StrategyResponse(
+        OffsetDateTime dataBasisAt,
+        boolean dataDelayed,
+        RouteAnalysis currentRoute,
+        List<StrategyView> strategies
+    ) {
+    }
+
+    /**
+     * 전략 카드 하나.
+     * comparisonValueMin·recommended는 전략 비교에서, reasons는 근거 문장 생성에서 채운다.
+     * missIntervalMin은 마을버스 배차 간격용으로 지금은 항상 null.
+     */
+    public record StrategyView(
+        boolean recommended,
+        boolean isCurrent,
+        StrategyType strategyType,
+        String title,
+        String moveToName,
+        Double moveToX,
+        Double moveToY,
+        int extraWalkMin,
+        Stage strategyRiskStage,
+        Integer totalMinIfBoard,
+        Integer totalMinIfMiss,
+        Integer comparisonValueMin,
+        OffsetDateTime expectedArrivalAt,
+        Integer remainSeats,
+        SeatType seatType,
+        OffsetDateTime busArrivalAt,
+        OffsetDateTime nextBusArrivalAt,
+        Object missIntervalMin,
+        List<String> reasons,
+        TripRoute route,
+        List<SegmentView> analysis
+    ) {
+    }
+
+    public record TripRoute(
+        List<TripSegment> segments
+    ) {
+    }
+
+    // trips selectedRoute.segments 모양 + segmentIndex
+    public record TripSegment(
+        int segmentIndex,
+        int seq,
+        String mode,
+        String gbisRouteId,
+        String routeLabel,
+        String boardStationId,
+        String alightStationId,
+        String boardName,
+        String alightName,
+        String matchStatus,
+        OffsetDateTime plannedStartAt,
+        OffsetDateTime plannedEndAt,
+        Integer walkMin,
+        OffsetDateTime userAlightAt
+    ) {
+    }
+}

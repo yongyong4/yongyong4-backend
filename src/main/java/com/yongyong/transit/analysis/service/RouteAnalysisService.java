@@ -37,6 +37,7 @@ public class RouteAnalysisService {
 
     private static final String BUS = "BUS";
     private static final String WALK = "WALK";
+    private static final String SUBWAY = "SUBWAY";
     private static final String MATCHED = "MATCHED";
     private static final String FAILED = "FAILED";
     private static final String NA = "NA";
@@ -65,10 +66,38 @@ public class RouteAnalysisService {
     ) {
         validate(request);
 
-        // 요청 안에서 같은 정류장은 한 번만 조회 (필요한 노선을 모아서)
-        Map<String, Set<String>> routeIdsByStation = new HashMap<>();
+        Map<String, StationArrivals> arrivalsByStation = loadArrivals(
+            request.routes(), now, CallBudget.unlimited()
+        );
+
+        List<RouteAnalysis> routes = new ArrayList<>();
 
         for (RouteInput route : request.routes()) {
+            routes.add(analyzeRoute(route, arrivalsByStation, now));
+        }
+
+        OffsetDateTime dataBasisAt = dataBasisAt(arrivalsByStation);
+
+        return new AnalysisResponse(
+            now,
+            seconds(dataBasisAt),
+            dataDelayed(arrivalsByStation, now),
+            routes
+        );
+    }
+
+    /**
+     * 여러 경로의 MATCHED 버스 정류장을 모아 정류장마다 한 번씩 실시간 조회한다.
+     * 수집 서버는 조회할 정류장이 있을 때만 한 번 부른다.
+     */
+    public Map<String, StationArrivals> loadArrivals(
+        List<RouteInput> routes,
+        OffsetDateTime now,
+        CallBudget budget
+    ) {
+        Map<String, Set<String>> routeIdsByStation = new HashMap<>();
+
+        for (RouteInput route : routes) {
             for (RouteSegment segment : route.segments()) {
                 if (MATCHED.equals(matchStatus(segment))) {
                     routeIdsByStation
@@ -94,42 +123,103 @@ public class RouteAnalysisService {
                     stationId,
                     routeIds,
                     snapshot,
-                    now
+                    now,
+                    budget
                 )
             )
         );
 
-        List<RouteAnalysis> routes = new ArrayList<>();
+        return arrivalsByStation;
+    }
 
-        for (RouteInput route : request.routes()) {
-            routes.add(analyzeRoute(route, arrivalsByStation, now));
-        }
-
-        OffsetDateTime dataBasisAt = arrivalsByStation.values()
+    // 쓴 데이터 중 가장 오래된 기준 시각. 없으면 null
+    public static OffsetDateTime dataBasisAt(
+        Map<String, StationArrivals> arrivalsByStation
+    ) {
+        return arrivalsByStation.values()
             .stream()
             .map(StationArrivals::dataBasisAt)
-            .filter(time -> time != null)
+            .filter(Objects::nonNull)
             .min(Comparator.naturalOrder())
             .orElse(null);
+    }
 
-        boolean dataDelayed = arrivalsByStation.values()
+    // 하나라도 지연(캐시 사용) 표시가 있거나 4분 이상 지났으면 true
+    public static boolean dataDelayed(
+        Map<String, StationArrivals> arrivalsByStation,
+        OffsetDateTime now
+    ) {
+        OffsetDateTime basis = dataBasisAt(arrivalsByStation);
+
+        return arrivalsByStation.values()
             .stream()
             .anyMatch(StationArrivals::delayed)
-            || (dataBasisAt != null
-                && Duration.between(dataBasisAt, now).getSeconds()
+            || (basis != null
+                && Duration.between(basis, now).getSeconds()
                     >= DELAYED_SECONDS);
+    }
 
-        return new AnalysisResponse(
-            now,
-            seconds(dataBasisAt),
-            dataDelayed,
-            routes
+    public RouteAnalysis analyzeRoute(
+        RouteInput route,
+        Map<String, StationArrivals> arrivalsByStation,
+        OffsetDateTime now
+    ) {
+        return toAnalysis(
+            route,
+            plan(route, arrivalsByStation, Map.of(), false, now, now)
         );
     }
 
-    private RouteAnalysis analyzeRoute(
+    // 경로 따라가기 결과를 2번 응답의 routes[] 모양으로 바꾼다
+    public RouteAnalysis toAnalysis(
+        RouteInput route,
+        RoutePlan plan
+    ) {
+        // 버스 구간이 없는 경로: 분석하지 않고 경로 정보만
+        if (!plan.hasBus()) {
+            return new RouteAnalysis(
+                route.routeIndex(), true, null, route.totalTimeMin(), List.of()
+            );
+        }
+
+        // 버스 구간이 모두 FAILED면 분석 불가
+        if (!plan.anyMatched()) {
+            return new RouteAnalysis(
+                route.routeIndex(), false, null, route.totalTimeMin(), List.of()
+            );
+        }
+
+        List<SegmentView> views = plan.segments()
+            .stream()
+            .filter(PlannedSegment::isBus)
+            .map(PlannedSegment::view)
+            .toList();
+
+        return new RouteAnalysis(
+            route.routeIndex(),
+            true,
+            plan.stage(),
+            route.totalTimeMin(),
+            views
+        );
+    }
+
+    /**
+     * 경로 따라가기: 시각 t를 들고 구간을 처음부터 끝까지 지나가며 계산한다.
+     * - 도보·지하철: t += durationMin (지하철은 사용자 하차 시각이 있으면 t = 그 시각)
+     * - MATCHED 버스: 구간 분석으로 t 이후 첫 버스를 골라 타고 t = 도착 + durationMin.
+     *   뒤 버스도 앞 버스 하차 시각 기준으로 다시 고르므로 환승 대기·연쇄 지연이 들어간다.
+     *   도착 정보가 없으면 t += durationMin (경로 API 시간으로 이어서 계산)
+     * - FAILED 버스: t += durationMin
+     * missFirstBus면 첫 MATCHED 버스는 다음 버스를 탄다. 다음 버스가 없으면 arrivalAt은 null.
+     * 재평가는 남은 구간만 넣고 startAt(기준 시각)을 지정해 그대로 쓸 수 있다.
+     */
+    public RoutePlan plan(
         RouteInput route,
         Map<String, StationArrivals> arrivalsByStation,
+        Map<Integer, OffsetDateTime> alightAtBySegment,
+        boolean missFirstBus,
+        OffsetDateTime startAt,
         OffsetDateTime now
     ) {
         List<RouteSegment> segments = route.segments();
@@ -144,54 +234,32 @@ public class RouteAnalysisService {
             }
         }
 
-        // 버스 구간이 없는 경로
-        if (lastBusIndex < 0) {
-            return new RouteAnalysis(
-                route.routeIndex(),
-                true,
-                null,
-                route.totalTimeMin(),
-                List.of()
-            );
-        }
-
-        // 버스 구간이 모두 FAILED면 분석 불가
-        if (!anyMatched) {
-            return new RouteAnalysis(
-                route.routeIndex(),
-                false,
-                null,
-                route.totalTimeMin(),
-                List.of()
-            );
-        }
-
-        List<SegmentView> views = new ArrayList<>();
+        List<PlannedSegment> planned = new ArrayList<>();
         Stage routeStage = null;
-
-        // 직전 기준점: 처음은 현재 시각, 이후는 앞 버스 하차 예정 시각
-        OffsetDateTime anchorAt = now;
-        int anchorIndex = -1;
+        boolean firstMatchedPassed = false;
+        boolean missImpossible = false;
+        OffsetDateTime t = startAt;
 
         for (int i = 0; i < segments.size(); i++) {
             RouteSegment segment = segments.get(i);
+            String status = matchStatus(segment);
+            int durationMin = minutes(segment);
 
-            if (!BUS.equals(segment.mode())) {
+            if (!MATCHED.equals(status)) {
+                OffsetDateTime end = t.plusMinutes(durationMin);
+                OffsetDateTime userAlightAt = SUBWAY.equals(segment.mode())
+                    ? alightAtBySegment.get(segment.segmentIndex())
+                    : null;
+
+                if (userAlightAt != null) {
+                    end = userAlightAt;
+                }
+
+                planned.add(new PlannedSegment(
+                    segment, status, t, end, null, userAlightAt
+                ));
+                t = end;
                 continue;
-            }
-
-            boolean walkBefore = i > 0
-                && WALK.equals(segments.get(i - 1).mode());
-
-            int walkMin = walkBefore
-                ? minutes(segments.get(i - 1))
-                : 0;
-
-            int betweenMin = 0;
-            int betweenEnd = walkBefore ? i - 1 : i;
-
-            for (int j = anchorIndex + 1; j < betweenEnd; j++) {
-                betweenMin += minutes(segments.get(j));
             }
 
             int afterMin = 0;
@@ -200,32 +268,26 @@ public class RouteAnalysisService {
                 afterMin += minutes(segments.get(j));
             }
 
-            if (!MATCHED.equals(matchStatus(segment))) {
-                views.add(SegmentView.failed(
-                    segment.segmentIndex(),
-                    firstBusNo(segment.busOptions()),
-                    segment.startName()
-                ));
-                continue;
-            }
-
             Set<String> routeIds = gbisRouteIds(segment);
+            StationArrivals stationArrivals =
+                arrivalsByStation.get(segment.startLocalStationId());
 
-            List<BusArrival> arrivals = arrivalsByStation
-                .get(segment.startLocalStationId())
-                .arrivals()
-                .stream()
-                .filter(arrival -> routeIds.contains(arrival.routeId()))
-                .toList();
+            List<BusArrival> arrivals = stationArrivals == null
+                ? List.of()
+                : stationArrivals.arrivals()
+                    .stream()
+                    .filter(arrival -> routeIds.contains(arrival.routeId()))
+                    .toList();
 
+            // 앞 도보는 이미 t에 들어 있으므로 walkMin 0, 기준 시각 t
             SegmentResult result = segmentAnalyzer.analyze(
                 new SegmentAnalyzer.SegmentInput(
                     segment.segmentIndex(),
                     gbisBusNo(segment),
                     segment.startName(),
-                    anchorAt.plusMinutes(betweenMin),
-                    walkMin,
-                    minutes(segment),
+                    t,
+                    0,
+                    durationMin,
                     afterMin,
                     i == lastBusIndex,
                     arrivals,
@@ -233,27 +295,34 @@ public class RouteAnalysisService {
                 )
             );
 
-            views.add(SegmentView.of(result));
-
             routeStage = routeStage == null
                 ? result.boardingStage()
                 : Stage.worse(routeStage, result.boardingStage());
 
-            // 앞 버스 하차 예정 시각을 다음 버스의 기준점으로.
-            // 도착 정보가 없으면 기준점을 그대로 두고 ODsay 소요시간으로 이어서 계산
-            if (result.predictedBusArrivalAt() != null) {
-                anchorAt = result.predictedBusArrivalAt()
-                    .plusMinutes(minutes(segment));
-                anchorIndex = i;
+            OffsetDateTime boardAt = result.predictedBusArrivalAt();
+
+            if (missFirstBus && !firstMatchedPassed) {
+                boardAt = result.nextBusArrivalAt();
+                missImpossible = boardAt == null;
             }
+
+            firstMatchedPassed = true;
+
+            OffsetDateTime start = boardAt != null ? boardAt : t;
+            OffsetDateTime end = start.plusMinutes(durationMin);
+
+            planned.add(new PlannedSegment(
+                segment, status, start, end, result, null
+            ));
+            t = end;
         }
 
-        return new RouteAnalysis(
-            route.routeIndex(),
-            true,
+        return new RoutePlan(
+            planned,
+            missImpossible ? null : t,
             routeStage,
-            route.totalTimeMin(),
-            views
+            lastBusIndex >= 0,
+            anyMatched
         );
     }
 
@@ -276,7 +345,7 @@ public class RouteAnalysisService {
      * 요청에 matchStatus가 있으면 우선하고, 없으면 직접 판단한다.
      * 버스가 아니면 NA, 승차 정류장 ID가 있고 경기 노선(ID가 2로 시작)이 있으면 MATCHED, 그 외 FAILED.
      */
-    private String matchStatus(RouteSegment segment) {
+    public String matchStatus(RouteSegment segment) {
         if (!BUS.equals(segment.mode())) {
             return NA;
         }
@@ -296,7 +365,7 @@ public class RouteAnalysisService {
             : FAILED;
     }
 
-    private Set<String> gbisRouteIds(RouteSegment segment) {
+    public Set<String> gbisRouteIds(RouteSegment segment) {
         Set<String> routeIds = new LinkedHashSet<>();
 
         if (segment.busOptions() == null) {
@@ -321,7 +390,7 @@ public class RouteAnalysisService {
             .orElse(null);
     }
 
-    private String firstBusNo(List<BusOption> busOptions) {
+    private static String firstBusNo(List<BusOption> busOptions) {
         if (busOptions == null || busOptions.isEmpty()) {
             return null;
         }
@@ -339,7 +408,7 @@ public class RouteAnalysisService {
         return segment.durationMin() == null ? 0 : segment.durationMin();
     }
 
-    private static OffsetDateTime seconds(OffsetDateTime time) {
+    public static OffsetDateTime seconds(OffsetDateTime time) {
         return time == null ? null : time.truncatedTo(ChronoUnit.SECONDS);
     }
 
@@ -360,7 +429,9 @@ public class RouteAnalysisService {
         String mode,
         Integer durationMin,
         String startName,
+        String endName,
         String startLocalStationId,
+        String endLocalStationId,
         String matchStatus,
         List<BusOption> busOptions
     ) {
@@ -370,6 +441,59 @@ public class RouteAnalysisService {
         String busNo,
         String localRouteId
     ) {
+    }
+
+    /**
+     * 경로 따라가기 결과.
+     * arrivalAt: 목적지 도착 시각 (놓친 경우 다음 버스가 없으면 null)
+     * stage: 버스 구간 탑승 단계 중 가장 위험한 값 (MATCHED 버스가 없으면 null)
+     */
+    public record RoutePlan(
+        List<PlannedSegment> segments,
+        OffsetDateTime arrivalAt,
+        Stage stage,
+        boolean hasBus,
+        boolean anyMatched
+    ) {
+        // 첫 MATCHED 버스 구간의 분석 결과. 없으면 null
+        public SegmentResult firstBus() {
+            return segments.stream()
+                .map(PlannedSegment::result)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        }
+    }
+
+    /**
+     * 구간 하나의 예정 시각.
+     * 버스는 탈 버스 도착 시각부터 하차까지, 도착 정보가 없으면 경로 API 시간 기준.
+     * result는 MATCHED 버스 구간만 있다.
+     */
+    public record PlannedSegment(
+        RouteSegment segment,
+        String matchStatus,
+        OffsetDateTime plannedStartAt,
+        OffsetDateTime plannedEndAt,
+        SegmentResult result,
+        OffsetDateTime userAlightAt
+    ) {
+        public boolean isBus() {
+            return BUS.equals(segment.mode());
+        }
+
+        // 2번 응답 segments[] 모양. FAILED 버스는 실시간 값 없이
+        public SegmentView view() {
+            if (result == null) {
+                return SegmentView.failed(
+                    segment.segmentIndex(),
+                    firstBusNo(segment.busOptions()),
+                    segment.startName()
+                );
+            }
+
+            return SegmentView.of(result);
+        }
     }
 
     public record AnalysisResponse(
@@ -409,7 +533,7 @@ public class RouteAnalysisService {
         OffsetDateTime nextBusArrivalAt,
         OffsetDateTime dataBasisAt
     ) {
-        static SegmentView of(SegmentResult result) {
+        public static SegmentView of(SegmentResult result) {
             return new SegmentView(
                 result.segmentIndex(),
                 result.routeLabel(),
@@ -431,8 +555,18 @@ public class RouteAnalysisService {
             );
         }
 
+        // 구간 번호만 바꾼 복사본 (전략은 route.segments 위치를 번호로 씀)
+        public SegmentView withSegmentIndex(Integer index) {
+            return new SegmentView(
+                index, routeLabel, boardName, predictedBusArrivalAt,
+                slackMin, slackStage, remainSeats, seatType, seatStage,
+                boardingStage, arriveIfBoard, totalMinIfBoard, arriveIfMiss,
+                totalMinIfMiss, nextRouteLabel, nextBusArrivalAt, dataBasisAt
+            );
+        }
+
         // GBIS로 조회할 수 없는 버스 구간: 실시간 값은 모두 null
-        static SegmentView failed(
+        public static SegmentView failed(
             Integer segmentIndex,
             String routeLabel,
             String boardName

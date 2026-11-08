@@ -77,7 +77,8 @@ public class SegmentAnalyzer {
             next == null ? null : next.arrivalAt(),
             board.dataBasisAt(),
             board.plateNo(),
-            board.modelVersion()
+            board.modelVersion(),
+            board.routeId()
         );
     }
 
@@ -93,6 +94,7 @@ public class SegmentAnalyzer {
             SeatType.NONE,
             Stage.UNKNOWN,
             Stage.CAUTION,
+            null,
             null,
             null,
             null,
@@ -264,7 +266,8 @@ public class SegmentAnalyzer {
         OffsetDateTime nextBusArrivalAt,
         OffsetDateTime dataBasisAt,
         String plateNo,
-        String modelVersion
+        String modelVersion,
+        String routeId
     ) {
     }
 }
