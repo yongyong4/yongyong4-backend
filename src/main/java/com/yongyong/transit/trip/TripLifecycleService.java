@@ -37,7 +37,8 @@ public class TripLifecycleService {
         PlatformTransactionManager transactionManager
     ) {
         this.jdbc = jdbc;
-        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate =
+            new TransactionTemplate(transactionManager);
     }
 
     // 1. 이용자 이동 종료
@@ -111,10 +112,11 @@ public class TripLifecycleService {
     }
 
     // 2. 이동 세션 자동 종료
-    // 예상 도착 시각 + 30분 경과 시 종료
-    // 1분 주기로 확인
+    // 가장 최근 예상 도착 시각 + 30분
+    // 1분마다 검사
     @Scheduled(fixedDelay = 60_000)
     public void autoEndOverdueTrips() {
+
         Timestamp threshold = Timestamp.valueOf(
             LocalDateTime.now(KST)
                 .minusMinutes(AUTO_END_DELAY_MIN)
@@ -142,6 +144,7 @@ public class TripLifecycleService {
     }
 
     private void autoEndOneTrip(long tripId) {
+
         List<Map<String, Object>> rows = jdbc.queryForList(
             """
             SELECT ended_at, expected_arrival_at
@@ -162,7 +165,6 @@ public class TripLifecycleService {
             return;
         }
 
-        // MySQL DATETIME은 LocalDateTime으로 반환될 수 있음
         LocalDateTime expectedArrivalAt = asLocalDateTime(
             trip.get("expected_arrival_at")
         );
@@ -213,6 +215,7 @@ public class TripLifecycleService {
     }
 
     // 3. 이동 요약 조회
+    // F-06-01 API 상세 명세 기준
     @Transactional(readOnly = true)
     public Map<String, Object> getSummary(
         String deviceId,
@@ -225,13 +228,12 @@ public class TripLifecycleService {
         if (trip.get("ended_at") == null) {
             throw new ResponseStatusException(
                 HttpStatus.CONFLICT,
-                "아직 종료되지 않은 이동입니다."
+                "진행 중인 이동은 요약을 조회할 수 없습니다."
             );
         }
 
         String endType = (String) trip.get("end_type");
 
-        // DB 조회 결과를 안전하게 날짜 타입으로 변환
         LocalDateTime startedAt = asLocalDateTime(
             trip.get("started_at")
         );
@@ -244,12 +246,8 @@ public class TripLifecycleService {
             trip.get("near_dest_at")
         );
 
-        LocalDateTime expectedArrivalAt = asLocalDateTime(
-            trip.get("expected_arrival_at")
-        );
-
-        // 사용자 종료: 종료 시각을 소요시간 계산에 사용
-        // 자동 종료: 종료 시각을 실제 도착 시각으로 사용하지 않음
+        // USER: 실제 종료 시각
+        // AUTO: 목적지 근처 도착 시각이 있을 때만 계산
         LocalDateTime arrivalBasis = null;
 
         if ("USER".equals(endType)) {
@@ -271,74 +269,13 @@ public class TripLifecycleService {
             }
         }
 
-        Long boardingSuccessCount = countStatus(
-            tripId, "BOARDED"
-        );
+        List<Map<String, Object>> boardingResults =
+            getBoardingResults(tripId);
 
-        Long boardingFailureCount = countStatus(
-            tripId, "BOARD_FAILED"
-        );
+        List<Map<String, Object>> routeChangeHistory =
+            getRouteChangeHistory(tripId);
 
-        Long reevaluationCount = jdbc.queryForObject(
-            """
-            SELECT COUNT(*)
-            FROM evaluation
-            WHERE trip_id = ?
-              AND trigger_type <> 'INITIAL'
-            """,
-            Long.class,
-            tripId
-        );
-
-        List<Map<String, Object>> routeRows = jdbc.queryForList(
-            """
-            SELECT
-                tr.trip_route_id,
-                tr.source,
-                tr.strategy_type,
-                tr.evaluation_id,
-                tr.created_at
-            FROM trip_route tr
-            WHERE tr.trip_id = ?
-              AND tr.source IN ('SUGGESTED', 'AFTER_FAIL')
-            ORDER BY tr.created_at ASC, tr.trip_route_id ASC
-            """,
-            tripId
-        );
-
-        List<Map<String, Object>> routeChanges =
-            new ArrayList<>();
-
-        for (Map<String, Object> row : routeRows) {
-            Map<String, Object> change =
-                new LinkedHashMap<>();
-
-            change.put(
-                "tripRouteId",
-                row.get("trip_route_id")
-            );
-            change.put(
-                "evaluationId",
-                row.get("evaluation_id")
-            );
-            change.put(
-                "source",
-                row.get("source")
-            );
-            change.put(
-                "strategyType",
-                row.get("strategy_type")
-            );
-            change.put(
-                "changedAt",
-                formatTime(row.get("created_at"))
-            );
-
-            routeChanges.add(change);
-        }
-
-        Map<String, Object> response =
-            new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
 
         response.put("tripId", tripId);
         response.put("destName", trip.get("dest_name"));
@@ -346,50 +283,200 @@ public class TripLifecycleService {
         response.put("endType", endType);
         response.put("startedAt", formatTime(startedAt));
         response.put("endedAt", formatTime(endedAt));
-
-        response.put(
-            "expectedArrivalAt",
-            formatTime(expectedArrivalAt)
-        );
-
-        response.put(
-            "nearDestAt",
-            formatTime(nearDestAt)
-        );
-
+        response.put("nearDestAt", formatTime(nearDestAt));
         response.put("durationMin", durationMin);
-
-        response.put(
-            "boardingSuccessCount",
-            boardingSuccessCount
-        );
-
-        response.put(
-            "boardingFailureCount",
-            boardingFailureCount
-        );
-
-        response.put(
-            "reevaluationCount",
-            reevaluationCount
-        );
-
-        response.put(
-            "routeChangeCount",
-            routeChanges.size()
-        );
-
-        response.put(
-            "routeChanges",
-            routeChanges
-        );
-
         response.put(
             "summaryShown",
             toBoolean(trip.get("summary_shown"))
         );
+        response.put("boardingResults", boardingResults);
+        response.put("routeChangeHistory", routeChangeHistory);
 
         return response;
+    }
+
+    // 3-1. 버스 구간별 탑승 성공·실패 기록
+    // 최초 경로와 변경 경로의 모든 버스 구간 조회
+    private List<Map<String, Object>> getBoardingResults(
+        long tripId
+    ) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+            """
+            SELECT
+                s.segment_id,
+                s.route_label,
+                l.log_id,
+                l.status AS boarding_status,
+                l.changed_at
+            FROM trip_route tr
+            JOIN segment s
+              ON s.trip_route_id = tr.trip_route_id
+            LEFT JOIN trip_status_log l
+              ON l.segment_id = s.segment_id
+             AND l.trip_id = tr.trip_id
+             AND l.status IN ('BOARDED', 'BOARD_FAILED')
+            WHERE tr.trip_id = ?
+              AND s.mode = 'BUS'
+            ORDER BY
+                tr.created_at ASC,
+                tr.trip_route_id ASC,
+                s.seq ASC,
+                l.changed_at ASC,
+                l.log_id ASC
+            """,
+            tripId
+        );
+
+        // 같은 구간에 여러 탑승 기록이 있어도
+        // boardingResults에는 구간을 한 번만 포함
+        Map<Long, Map<String, Object>> segmentMap =
+            new LinkedHashMap<>();
+
+        for (Map<String, Object> row : rows) {
+
+            long segmentId = toLong(
+                row.get("segment_id")
+            );
+
+            Map<String, Object> boardingResult =
+                segmentMap.get(segmentId);
+
+            if (boardingResult == null) {
+                boardingResult = new LinkedHashMap<>();
+
+                boardingResult.put(
+                    "segmentId",
+                    segmentId
+                );
+
+                boardingResult.put(
+                    "routeLabel",
+                    row.get("route_label")
+                );
+
+                boardingResult.put(
+                    "events",
+                    new ArrayList<Map<String, Object>>()
+                );
+
+                segmentMap.put(segmentId, boardingResult);
+            }
+
+            String status =
+                (String) row.get("boarding_status");
+
+            // 기록이 없는 버스 구간은 events: []
+            if (status == null) {
+                continue;
+            }
+
+            Map<String, Object> event =
+                new LinkedHashMap<>();
+
+            event.put("status", status);
+            event.put(
+                "changedAt",
+                formatTime(row.get("changed_at"))
+            );
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> events =
+                (List<Map<String, Object>>)
+                    boardingResult.get("events");
+
+            events.add(event);
+        }
+
+        return new ArrayList<>(segmentMap.values());
+    }
+
+    // 3-2. 경로 변경 제안·수락·무시·미응답 이력
+    private List<Map<String, Object>> getRouteChangeHistory(
+        long tripId
+    ) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+            """
+            SELECT
+                e.evaluation_id,
+                e.evaluated_at,
+                e.suggested_strategy,
+                e.accepted,
+                e.responded_at,
+                CASE
+                    WHEN e.accepted = TRUE THEN (
+                        SELECT MIN(tr.trip_route_id)
+                        FROM trip_route tr
+                        WHERE tr.trip_id = e.trip_id
+                          AND tr.evaluation_id = e.evaluation_id
+                          AND tr.source IN (
+                              'SUGGESTED',
+                              'AFTER_FAIL'
+                          )
+                    )
+                    ELSE NULL
+                END AS applied_route_id
+            FROM evaluation e
+            WHERE e.trip_id = ?
+              AND e.result = 'SUGGEST'
+            ORDER BY
+                e.evaluated_at ASC,
+                e.evaluation_id ASC
+            """,
+            tripId
+        );
+
+        List<Map<String, Object>> history =
+            new ArrayList<>();
+
+        for (Map<String, Object> row : rows) {
+
+            Map<String, Object> item =
+                new LinkedHashMap<>();
+
+            item.put(
+                "evaluationId",
+                toLong(row.get("evaluation_id"))
+            );
+
+            item.put(
+                "suggestedAt",
+                formatTime(row.get("evaluated_at"))
+            );
+
+            item.put(
+                "strategyType",
+                row.get("suggested_strategy")
+            );
+
+            Object acceptedValue = row.get("accepted");
+
+            // 미응답 평가: accepted = null
+            item.put(
+                "accepted",
+                acceptedValue == null
+                    ? null
+                    : toBoolean(acceptedValue)
+            );
+
+            item.put(
+                "respondedAt",
+                formatTime(row.get("responded_at"))
+            );
+
+            Object appliedRouteId =
+                row.get("applied_route_id");
+
+            item.put(
+                "appliedRouteId",
+                appliedRouteId == null
+                    ? null
+                    : toLong(appliedRouteId)
+            );
+
+            history.add(item);
+        }
+
+        return history;
     }
 
     // 4. 이동 요약 확인 완료
@@ -420,7 +507,7 @@ public class TripLifecycleService {
             );
         }
 
-        // 중복 요청도 성공으로 처리
+        // 중복 요청 허용
         jdbc.update(
             """
             UPDATE trip
@@ -430,8 +517,7 @@ public class TripLifecycleService {
             tripId
         );
 
-        Map<String, Object> response =
-            new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
 
         response.put("tripId", tripId);
         response.put("summaryShown", true);
@@ -439,7 +525,7 @@ public class TripLifecycleService {
         return response;
     }
 
-    // 기기 소유권 확인 및 이동 조회
+    // 5. 기기 소유권 및 이동 세션 조회
     private Map<String, Object> findOwnedTrip(
         String deviceId,
         long tripId,
@@ -479,22 +565,7 @@ public class TripLifecycleService {
         return rows.get(0);
     }
 
-    // 상태별 기록 횟수
-    private Long countStatus(long tripId, String status) {
-        return jdbc.queryForObject(
-            """
-            SELECT COUNT(*)
-            FROM trip_status_log
-            WHERE trip_id = ?
-              AND status = ?
-            """,
-            Long.class,
-            tripId,
-            status
-        );
-    }
-
-    // 종료 처리 응답
+    // 6. 공통 유틸리티
     private Map<String, Object> endResponse(
         long tripId,
         String endType,
@@ -511,13 +582,13 @@ public class TripLifecycleService {
         return result;
     }
 
-    // 현재 시각
     private Timestamp now() {
         return Timestamp.valueOf(LocalDateTime.now(KST));
     }
 
-    // MySQL DATETIME 조회 타입 대응
+    // MySQL DATETIME은 LocalDateTime으로 반환될 수 있음
     private LocalDateTime asLocalDateTime(Object value) {
+
         if (value == null) {
             return null;
         }
@@ -536,8 +607,8 @@ public class TripLifecycleService {
         );
     }
 
-    // API용 날짜 문자열 변환
     private String formatTime(Object value) {
+
         LocalDateTime dateTime = asLocalDateTime(value);
 
         if (dateTime == null) {
@@ -549,8 +620,8 @@ public class TripLifecycleService {
             .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
-    // MySQL BOOLEAN 값 변환
     private boolean toBoolean(Object value) {
+
         if (value instanceof Boolean booleanValue) {
             return booleanValue;
         }
@@ -560,6 +631,17 @@ public class TripLifecycleService {
         }
 
         return false;
+    }
+
+    private long toLong(Object value) {
+
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+
+        throw new IllegalStateException(
+            "DB ID 값의 형식이 올바르지 않습니다."
+        );
     }
 
     private ResponseStatusException badRequest(String message) {
