@@ -294,7 +294,7 @@ class BusRealtimeServiceTest {
     }
 
     @Test
-    void 수집대상이_아닌_노선이나_정류장은_예측하지_않음() {
+    void 수집대상이_아닌_노선은_예측하지_않음() {
         givenCollector("2026-11-04T07:28:00+09:00");
         givenGbis(gbisArrivals());
         when(predictClient.isEnabled()).thenReturn(true);
@@ -305,14 +305,29 @@ class BusRealtimeServiceTest {
             service.loadCollectorSnapshot(NOW), NOW
         );
 
-        // 다른 정류장은 수집 정류장이 아님
+        verify(predictClient, never()).predict(any());
+    }
+
+    @Test
+    void 수집_정류장_5곳_밖이어도_수집_노선이면_좌석을_예측() {
+        givenCollector("2026-11-04T07:28:00+09:00");
         when(gbisClient.getStationArrivals("228000999")).thenReturn(gbisArrivals());
-        service.getArrivals(
+        when(predictClient.isEnabled()).thenReturn(true);
+        // 5곳 밖은 도착 시각을 보정하지 않는다
+        when(predictClient.predict(any())).thenReturn(new PredictResult(
+            List.of(new Prediction("G-5005-1", null, 4)), "v5"
+        ));
+
+        StationArrivals result = service.getArrivals(
             "228000999", Set.of(ROUTE_5005),
             service.loadCollectorSnapshot(NOW), NOW
         );
 
-        verify(predictClient, never()).predict(any());
+        BusArrival first = result.arrivals().get(0);
+        assertThat(first.seatType()).isEqualTo(SeatType.PREDICTED);
+        assertThat(first.remainSeats()).isEqualTo(4);
+        assertThat(first.modelVersion()).isEqualTo("v5");
+        verify(predictClient).predict(any());
     }
 
     @Test

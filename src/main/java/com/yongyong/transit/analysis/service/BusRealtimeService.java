@@ -64,7 +64,7 @@ public class BusRealtimeService {
     /**
      * 수집 서버의 최신 도착정보를 한 번에 받아 둔다. 분석 요청 1번당 1번만 호출한다.
      * 4분 이내에 수집된 값만 남기고, 수집 서버 오류면 빈 값을 돌려준다.
-     * 수집 노선·정류장 목록(예측 대상 판단용)은 신선도와 상관없이 함께 담는다.
+     * 수집 노선 목록(예측 대상 판단용)은 신선도와 상관없이 함께 담는다.
      */
     public CollectorSnapshot loadCollectorSnapshot(OffsetDateTime now) {
         try {
@@ -78,11 +78,7 @@ public class BusRealtimeService {
             }
 
             Map<String, List<BusArrival>> byStation = new HashMap<>();
-            Set<String> collectedStationIds = new HashSet<>();
-
             for (JsonNode item : collectorClient.getArrivals()) {
-                collectedStationIds.add(item.path("station_id").asText());
-
                 String routeId = routeIdByName.get(
                     item.path("route_name").asText()
                 );
@@ -121,8 +117,7 @@ public class BusRealtimeService {
 
             return new CollectorSnapshot(
                 byStation,
-                new HashSet<>(routeIdByName.values()),
-                collectedStationIds
+                new HashSet<>(routeIdByName.values())
             );
 
         } catch (RuntimeException e) {
@@ -212,9 +207,10 @@ public class BusRealtimeService {
     }
 
     /**
-     * 수집 노선 + 수집 정류장이면 (노선, 정류장)마다 예측 서버를 호출해
+     * 수집 노선이면 정류장과 상관없이 (노선, 정류장)마다 예측 서버를 호출해
      * 차량번호가 같은 버스의 도착 시각·좌석을 예측값으로 바꾼다.
-     * 예측 서버가 없거나 실패하면 실시간 값을 그대로 둔다.
+     * 수집 정류장 5곳은 도착·좌석, 나머지 정류장은 좌석만 예측된다(도착은 null이나 받은 값).
+     * 예측 서버가 없거나 실패(400 포함)하면 실시간 값을 그대로 둔다.
      */
     private List<BusArrival> applyPredictions(
         String stationId,
@@ -222,8 +218,7 @@ public class BusRealtimeService {
         CollectorSnapshot snapshot,
         OffsetDateTime now
     ) {
-        if (!predictClient.isEnabled()
-            || !snapshot.collectedStationIds().contains(stationId)) {
+        if (!predictClient.isEnabled()) {
             return arrivals;
         }
 
@@ -395,11 +390,10 @@ public class BusRealtimeService {
 
     public record CollectorSnapshot(
         Map<String, List<BusArrival>> byStation,
-        Set<String> collectedRouteIds,
-        Set<String> collectedStationIds
+        Set<String> collectedRouteIds
     ) {
         public static CollectorSnapshot empty() {
-            return new CollectorSnapshot(Map.of(), Set.of(), Set.of());
+            return new CollectorSnapshot(Map.of(), Set.of());
         }
 
         public List<BusArrival> arrivals(String stationId) {
