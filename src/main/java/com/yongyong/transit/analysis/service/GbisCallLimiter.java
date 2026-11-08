@@ -16,6 +16,8 @@ import java.util.Map;
 public class GbisCallLimiter {
 
     public static final String ARRIVAL = "ARRIVAL";
+    public static final String ROUTE_STATION = "ROUTE_STATION";
+    public static final String STATION_ROUTE = "STATION_ROUTE";
 
     private static final double ALLOW_RATIO = 0.8;
 

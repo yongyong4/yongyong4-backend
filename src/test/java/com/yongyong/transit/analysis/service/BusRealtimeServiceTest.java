@@ -178,6 +178,31 @@ class BusRealtimeServiceTest {
     }
 
     @Test
+    void 요청당_한도를_다_쓰면_GBIS를_부르지_않고_세어진_만큼만_호출() {
+        givenGbis(gbisArrivals());
+        CallBudget budget = CallBudget.of(1);
+
+        service.getArrivals(
+            STATION, Set.of(ROUTE_5005), CollectorSnapshot.empty(), NOW, budget
+        );
+        // 60초 캐시 안이라 한도와 상관없이 캐시를 씀 (세지 않음)
+        service.getArrivals(
+            STATION, Set.of(ROUTE_5005), CollectorSnapshot.empty(),
+            NOW.plusSeconds(30), budget
+        );
+        StationArrivals other = service.getArrivals(
+            "228000999", Set.of(ROUTE_5005), CollectorSnapshot.empty(),
+            NOW, budget
+        );
+
+        verify(gbisClient, times(1)).getStationArrivals(anyString());
+        assertThat(budget.used()).isEqualTo(1);
+        assertThat(budget.limitReached()).isTrue();
+        assertThat(other.arrivals()).isEmpty();
+        assertThat(other.delayed()).isTrue();
+    }
+
+    @Test
     void 키가_없으면_호출하지_않고_빈목록과_지연표시() {
         when(gbisClient.hasKey()).thenReturn(false);
 

@@ -140,6 +140,22 @@ public class BusRealtimeService {
         CollectorSnapshot snapshot,
         OffsetDateTime now
     ) {
+        return getArrivals(
+            stationId, routeIds, snapshot, now, CallBudget.unlimited()
+        );
+    }
+
+    /**
+     * 요청당 GBIS 호출 한도(budget)를 지키며 조회한다 (전략 비교·재평가용).
+     * 한도를 다 쓰면 GBIS를 부르지 않고 캐시만 쓴다.
+     */
+    public StationArrivals getArrivals(
+        String stationId,
+        Set<String> routeIds,
+        CollectorSnapshot snapshot,
+        OffsetDateTime now,
+        CallBudget budget
+    ) {
         List<BusArrival> arrivals = new ArrayList<>();
         List<OffsetDateTime> basisTimes = new ArrayList<>();
         boolean delayed = false;
@@ -155,7 +171,7 @@ public class BusRealtimeService {
         arrivals.forEach(arrival -> remaining.remove(arrival.routeId()));
 
         if (!remaining.isEmpty()) {
-            GbisLookup lookup = lookupGbis(stationId, now);
+            GbisLookup lookup = lookupGbis(stationId, now, budget);
             delayed = lookup.delayed();
 
             if (lookup.data() != null) {
@@ -283,7 +299,8 @@ public class BusRealtimeService {
 
     private GbisLookup lookupGbis(
         String stationId,
-        OffsetDateTime now
+        OffsetDateTime now,
+        CallBudget budget
     ) {
         CachedStation cached = cache.get(stationId);
 
@@ -294,12 +311,15 @@ public class BusRealtimeService {
         }
 
         boolean canCall = gbisClient.hasKey()
+            && budget.hasRemaining()
             && callLimiter.tryAcquire(
                 GbisCallLimiter.ARRIVAL,
                 now.atZoneSameInstant(KST).toLocalDate()
             );
 
         if (canCall) {
+            budget.use();
+
             try {
                 GbisArrivals data = gbisClient.getStationArrivals(stationId);
                 cache.put(stationId, new CachedStation(data, now));
