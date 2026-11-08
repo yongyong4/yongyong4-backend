@@ -1,6 +1,6 @@
 package com.yongyong.transit.strategy.service;
 
-import com.yongyong.transit.analysis.service.BusRealtimeService.StationArrivals;
+import com.yongyong.transit.analysis.service.BusRealtimeService;
 import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
@@ -13,6 +13,7 @@ import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.SegmentResult;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
+import com.yongyong.transit.strategy.service.AlternativeService.Candidate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -31,7 +32,8 @@ import static com.yongyong.transit.analysis.service.RouteAnalysisService.seconds
 
 /**
  * 전략 비교·추천.
- * 고른 경로를 처음부터 끝까지 따라가며 KEEP(그대로 타기) 전략을 만든다.
+ * 고른 경로를 처음부터 끝까지 따라가며 KEEP(그대로 타기) 전략을 만들고,
+ * 대안 생성의 후보도 같은 방식으로 계산해 전략 카드로 만든다.
  * 재평가는 HTTP 대신 evaluate()를 REEVALUATION 모드로 바로 호출한다.
  */
 @Service
@@ -49,9 +51,17 @@ public class StrategyService {
     private static final String ALIGHT_ERROR = "하차 시각이 올바르지 않습니다.";
 
     private final RouteAnalysisService routeAnalysisService;
+    private final BusRealtimeService busRealtimeService;
+    private final AlternativeService alternativeService;
 
-    public StrategyService(RouteAnalysisService routeAnalysisService) {
+    public StrategyService(
+        RouteAnalysisService routeAnalysisService,
+        BusRealtimeService busRealtimeService,
+        AlternativeService alternativeService
+    ) {
         this.routeAnalysisService = routeAnalysisService;
+        this.busRealtimeService = busRealtimeService;
+        this.alternativeService = alternativeService;
     }
 
     public StrategyResponse strategies(StrategyRequest request) {
@@ -94,12 +104,13 @@ public class StrategyService {
         OffsetDateTime now
     ) {
         CallBudget budget = CallBudget.of(CALL_LIMIT_PER_REQUEST);
-
-        Map<String, StationArrivals> arrivalsByStation =
-            routeAnalysisService.loadArrivals(List.of(route), now, budget);
+        ArrivalStore store = new ArrivalStore(
+            busRealtimeService, routeAnalysisService, now, budget
+        );
+        store.load(route);
 
         RoutePlan boardPlan = routeAnalysisService.plan(
-            route, arrivalsByStation, alightAtBySegment, false, baseTime, now
+            route, store.arrivals(), alightAtBySegment, false, baseTime, now
         );
 
         if (boardPlan.hasBus() && !boardPlan.anyMatched()) {
@@ -110,46 +121,72 @@ public class StrategyService {
         }
 
         RoutePlan missPlan = routeAnalysisService.plan(
-            route, arrivalsByStation, alightAtBySegment, true, baseTime, now
+            route, store.arrivals(), alightAtBySegment, true, baseTime, now
         );
 
-        List<StrategyView> strategies = new ArrayList<>();
-        strategies.add(keep(boardPlan, missPlan, now));
+        SegmentResult firstBus = boardPlan.firstBus();
+        String keepTitle = firstBus == null || firstBus.routeLabel() == null
+            ? "그대로 가기"
+            : "그대로 " + firstBus.routeLabel() + "번 타기";
 
+        List<StrategyView> strategies = new ArrayList<>();
+        strategies.add(view(
+            new Candidate(
+                StrategyType.KEEP, keepTitle, route, -1,
+                null, null, null, 0, boardPlan, missPlan
+            ),
+            now
+        ));
+
+        List<Candidate> candidates = alternativeService.generate(
+            new AlternativeService.Context(
+                route,
+                boardPlan,
+                alternativeRoutes,
+                alightAtBySegment,
+                currentLocation,
+                baseTime,
+                now,
+                store
+            )
+        );
+
+        for (Candidate candidate : candidates) {
+            strategies.add(view(candidate, now));
+        }
+
+        // 호출 한도에 닿아 캐시만 쓴 조회가 있으면 지연으로 표시
         return new StrategyResponse(
-            seconds(RouteAnalysisService.dataBasisAt(arrivalsByStation)),
-            RouteAnalysisService.dataDelayed(arrivalsByStation, now),
+            seconds(RouteAnalysisService.dataBasisAt(store.arrivals())),
+            RouteAnalysisService.dataDelayed(store.arrivals(), now)
+                || budget.limitReached(),
             routeAnalysisService.toAnalysis(route, boardPlan),
             strategies
         );
     }
 
-    // 고른 경로를 그대로 타는 전략
-    private StrategyView keep(
-        RoutePlan boardPlan,
-        RoutePlan missPlan,
-        OffsetDateTime now
-    ) {
+    /**
+     * 전략 카드 하나. KEEP과 대안 모두 같은 방식으로 만든다.
+     * 버스가 없는 경로(지하철만·다른 교통수단)는 단계 OK, 놓쳤을 때도 같은 시간.
+     */
+    private StrategyView view(Candidate candidate, OffsetDateTime now) {
+        RoutePlan boardPlan = candidate.boardPlan();
+        RoutePlan missPlan = candidate.missPlan();
         SegmentResult firstBus = boardPlan.firstBus();
 
-        // 버스 구간이 없으면(지하철만) 분석 없이 다른 교통수단처럼 OK
         Stage stage = boardPlan.hasBus()
             ? riskStage(boardPlan.stage())
             : Stage.OK;
 
-        String title = firstBus == null || firstBus.routeLabel() == null
-            ? "그대로 가기"
-            : "그대로 " + firstBus.routeLabel() + "번 타기";
-
         return new StrategyView(
             false,
-            true,
-            StrategyType.KEEP,
-            title,
-            null,
-            null,
-            null,
-            0,
+            candidate.type() == StrategyType.KEEP,
+            candidate.type(),
+            candidate.title(),
+            candidate.moveToName(),
+            candidate.moveToX(),
+            candidate.moveToY(),
+            candidate.extraWalkMin(),
             stage,
             totalMin(now, boardPlan.arrivalAt()),
             boardPlan.hasBus()

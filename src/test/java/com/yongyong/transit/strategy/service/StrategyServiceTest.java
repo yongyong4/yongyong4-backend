@@ -12,6 +12,7 @@ import com.yongyong.transit.analysis.service.SegmentAnalyzer;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.BusArrival;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.SeatType;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
+import com.yongyong.transit.route.walking.service.WalkingRouteService;
 import com.yongyong.transit.strategy.service.StrategyService.AlightUpdate;
 import com.yongyong.transit.strategy.service.StrategyService.Mode;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyRequest;
@@ -58,8 +59,17 @@ class StrategyServiceTest {
         when(realtime.loadCollectorSnapshot(any()))
             .thenReturn(CollectorSnapshot.empty());
 
+        RouteAnalysisService analysis =
+            new RouteAnalysisService(realtime, new SegmentAnalyzer());
+
         service = new StrategyService(
-            new RouteAnalysisService(realtime, new SegmentAnalyzer())
+            analysis,
+            realtime,
+            new AlternativeService(
+                analysis,
+                mock(RouteStationService.class),
+                mock(WalkingRouteService.class)
+            )
         );
     }
 
