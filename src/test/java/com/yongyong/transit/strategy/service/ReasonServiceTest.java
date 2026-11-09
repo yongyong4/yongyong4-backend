@@ -264,6 +264,30 @@ class ReasonServiceTest {
     }
 
     @Test
+    void 좌석_값이_없는데_좌석을_말하면_탈락() {
+        // 지하철이 1분 빠른 경우 (실제 E2E: "지하철로 가면 좌석과 여유가 있어요")
+        Fact subway = new Fact(StrategyType.OTHER_MODE, true, null, true, 73, 1, 0,
+            Stage.OK, null, null, null, null, null, null, null);
+        Fact keep = new Fact(StrategyType.KEEP, false, "5005", null, 74, 0, 0,
+            Stage.OK, Stage.OK, null, null, null, 8, 4, null);
+
+        var seat = service.parseValid("""
+            {"OTHER_MODE": ["지하철로 가면 좌석과 여유가 있어요"],
+             "KEEP": ["8분 뒤 버스를 여유 있게 탈 수 있어요"]}
+            """, List.of(subway, keep));
+        var noSeat = service.parseValid("""
+            {"OTHER_MODE": ["버스를 기다리지 않아도 돼요", "지하철로 가면 1분 빨리 도착해요"],
+             "KEEP": ["8분 뒤 버스를 여유 있게 탈 수 있어요"]}
+            """, List.of(subway, keep));
+
+        assertThat(seat).containsOnlyKeys(StrategyType.KEEP);
+        assertThat(noSeat).containsKeys(StrategyType.OTHER_MODE, StrategyType.KEEP);
+        // 탈락하면 문장 틀: 기다리지 않는다는 말을 먼저
+        assertThat(ReasonService.templates(subway, false))
+            .containsExactly("버스를 기다리지 않아도 돼요", "지하철로 가면 1분 빨리 도착해요");
+    }
+
+    @Test
     void 앞_정류장_앉아_라는_말은_쓰지_않음() {
         assertThat(ReasonService.valid(List.of("앞 정류장에서 타면 5분 빨라요"), false,
             Set.of("5"), 5)).isFalse();

@@ -317,8 +317,14 @@ public class ReasonService {
             boolean walkWording = fact.strategyType() != StrategyType.DETOUR
                 || sentences.stream().noneMatch(sentence -> sentence.contains("바꾸"));
 
+            // 좌석 값을 안 보냈으면(지하철, 예측값 아님) 좌석·자리를 말하지 않는다
+            boolean seatKnown = fact.remainSeats() != null || fact.seatStage() != null
+                || sentences.stream().noneMatch(sentence ->
+                    sentence.contains("좌석") || sentence.contains("자리"));
+
             if (missWarned
                 && walkWording
+                && seatKnown
                 && valid(sentences, fact.recommended(), allowed, fact.diffMin())) {
                 result.put(fact.strategyType(), sentences);
             }

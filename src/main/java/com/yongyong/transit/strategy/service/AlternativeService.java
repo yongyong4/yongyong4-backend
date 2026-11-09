@@ -694,11 +694,23 @@ public class AlternativeService {
             .orElse(null);
     }
 
+    /**
+     * 바꾼 구간만큼 총 시간도 바꾼다.
+     * 지하철 환승 대기(총 시간 − 구간 합)가 원래 경로와 같게 남도록.
+     */
     private static RouteInput withSegments(
         RouteInput route,
         List<RouteSegment> segments
     ) {
-        return new RouteInput(route.routeIndex(), route.totalTimeMin(), segments);
+        Integer totalTimeMin = route.totalTimeMin() == null
+            ? null
+            : route.totalTimeMin() + sum(segments) - sum(route.segments());
+
+        return new RouteInput(route.routeIndex(), totalTimeMin, segments);
+    }
+
+    private static int sum(List<RouteSegment> segments) {
+        return segments.stream().mapToInt(AlternativeService::minutes).sum();
     }
 
     private static int minutes(RouteSegment segment) {
