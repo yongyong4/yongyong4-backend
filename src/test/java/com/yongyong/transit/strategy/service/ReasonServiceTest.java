@@ -228,6 +228,26 @@ class ReasonServiceTest {
     }
 
     @Test
+    void 우회를_바꾸면이라고_쓰면_탈락() {
+        Fact detour = new Fact(StrategyType.DETOUR, false, "33-2", null, 62, 11, 4,
+            Stage.OK, Stage.OK, null, null, null, 5, null, null);
+        Fact keep = new Fact(StrategyType.KEEP, true, "5003B", null, 73, 0, 0,
+            Stage.OK, Stage.OK, null, null, null, 7, null, null);
+
+        var changed = service.parseValid("""
+            {"DETOUR": ["33-2번으로 바꾸면 11분 빨리 도착해요"],
+             "KEEP": ["7분 뒤 버스를 여유 있게 탈 수 있어요"]}
+            """, List.of(detour, keep));
+        var walk = service.parseValid("""
+            {"DETOUR": ["다른 정류장에서 타면 11분 빨리 도착해요"],
+             "KEEP": ["7분 뒤 버스를 여유 있게 탈 수 있어요"]}
+            """, List.of(detour, keep));
+
+        assertThat(changed).containsOnlyKeys(StrategyType.KEEP);
+        assertThat(walk).containsKeys(StrategyType.DETOUR, StrategyType.KEEP);
+    }
+
+    @Test
     void 앞_정류장_앉아_라는_말은_쓰지_않음() {
         assertThat(ReasonService.valid(List.of("앞 정류장에서 타면 5분 빨라요"), false,
             Set.of("5"), 5)).isFalse();

@@ -57,7 +57,7 @@ public class ReasonService {
 
         전략 종류
         - KEEP: 지금 경로 그대로 가기. BACKTRACK: 같은 노선을 버스가 지나온 이전 정류장으로 거슬러 걸어가서 타기.
-        - ALT_ROUTE: 같은 정류장에서 다른 노선으로 바꿔 타기. DETOUR: 다른 정류장까지 걸어가서 다른 노선 타기.
+        - ALT_ROUTE: 같은 정류장에서 다른 노선으로 바꿔 타기. DETOUR: 다른 정류장까지 걸어가서 다른 노선 타기("바꾸면"이라고 쓰지 않는다).
         - OTHER_MODE: 버스 대신 다른 교통수단으로 가기. bySubway가 true면 지하철, 없으면 "다른 교통수단"이라고 쓴다.
 
         문장 수
@@ -296,7 +296,12 @@ public class ReasonService {
             boolean missWarned = fact.slackStage() != Stage.RISK
                 || sentences.stream().anyMatch(sentence -> sentence.contains("놓"));
 
+            // 우회는 걸어가서 타는 방법이라 "바꾸면"(같은 정류장에서 노선 변경)으로 쓰지 않는다
+            boolean walkWording = fact.strategyType() != StrategyType.DETOUR
+                || sentences.stream().noneMatch(sentence -> sentence.contains("바꾸"));
+
             if (missWarned
+                && walkWording
                 && valid(sentences, fact.recommended(), allowed, fact.diffMin())) {
                 result.put(fact.strategyType(), sentences);
             }
