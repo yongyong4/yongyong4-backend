@@ -110,6 +110,22 @@ class ReasonServiceTest {
     }
 
     @Test
+    void 전략이_하나면_LLM을_부르지_않음() {
+        List<StrategyView> result = service.withReasons(
+            List.of(keep(true, 80, Stage.OK)), Mode.STRATEGY, NOW
+        );
+
+        assertThat(result.get(0).reasons()).isNotEmpty();
+        verify(openAi, never()).completeJson(anyString(), anyString(), any());
+    }
+
+    @Test
+    void 지하철_뒤에_갈아타는_버스는_대기_시간을_보내지_않음() {
+        assertThat(ReasonService.fact(keepWith("BUS"), 80, NOW).waitMin()).isEqualTo(11);
+        assertThat(ReasonService.fact(keepWith("SUBWAY"), 80, NOW).waitMin()).isNull();
+    }
+
+    @Test
     void 문장_검사는_개수_40자_해요체_확률_숫자를_봄() {
         Set<String> numbers = Set.of("9", "5003");
 
@@ -303,6 +319,28 @@ class ReasonServiceTest {
 
         assertThat(service.factsJson(List.of(ReasonService.fact(detour, 80, NOW))))
             .doesNotContain("동백역", "moveToName");
+    }
+
+    // 도보 → (mode) → 버스 경로의 KEEP. 버스는 11분 뒤 도착
+    private static StrategyView keepWith(String firstMode) {
+        StrategyView keep = keep(true, 80, Stage.OK);
+        List<TripSegment> segments = List.of(
+            new TripSegment(0, 1, "WALK", null, null, null, null, "출발지", "역", null,
+                NOW, NOW, null, null),
+            new TripSegment(1, 2, firstMode, null, "5003A", null, null, "역", "동백역",
+                null, NOW, NOW, null, null),
+            new TripSegment(2, 3, "BUS", null, "5003A", null, null, "동백역", "강남역",
+                null, NOW, NOW, null, null)
+        );
+
+        return new StrategyView(
+            keep.recommended(), keep.isCurrent(), keep.strategyType(), keep.title(),
+            keep.moveToName(), keep.moveToX(), keep.moveToY(), keep.extraWalkMin(),
+            keep.strategyRiskStage(), keep.totalMinIfBoard(), keep.totalMinIfMiss(),
+            keep.comparisonValueMin(), keep.expectedArrivalAt(), keep.remainSeats(),
+            keep.seatType(), keep.busArrivalAt(), keep.nextBusArrivalAt(),
+            keep.missIntervalMin(), keep.reasons(), new TripRoute(segments), keep.analysis()
+        );
     }
 
     private static StrategyView otherMode(String mode) {

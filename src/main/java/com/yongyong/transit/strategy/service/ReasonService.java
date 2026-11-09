@@ -31,13 +31,13 @@ import java.util.regex.Pattern;
  * - 추천 전략은 1~2문장, 나머지는 1문장. 한 문장 40자 이내, 해요체
  * - 사실 JSON에 없는 숫자, 확률·퍼센트, 내부 용어("추천", "단계", 필드 값)가 있으면 그 전략은 문장 틀을 쓴다
  * - 주의·위험이면 이유(cautionCause)를 서버가 계산해 넣는다
- * - LLM 오류·2.5초 초과·키 없음, 재평가는 모든 전략에 문장 틀을 쓴다
+ * - LLM 오류·3.5초 초과·키 없음, 재평가는 모든 전략에 문장 틀을 쓴다
  * - 입력을 줄이려고 값이 없는(null) 필드는 보내지 않는다
  */
 @Service
 public class ReasonService {
 
-    static final Duration LLM_TIMEOUT = Duration.ofMillis(2500);
+    static final Duration LLM_TIMEOUT = Duration.ofMillis(3500);
     static final int MAX_CHARS = 40;
     // 이만큼 이하로 빨라지면 시간보다 다른 장점(좌석·여유)을 먼저 말한다
     static final int SMALL_GAIN_MIN = 2;
@@ -57,7 +57,7 @@ public class ReasonService {
 
         전략 종류
         - KEEP: 지금 경로 그대로 가기. BACKTRACK: 같은 노선을 버스가 지나온 이전 정류장으로 거슬러 걸어가서 타기.
-        - ALT_ROUTE: 같은 정류장에서 다른 노선으로 바꿔 타기. DETOUR: 다른 정류장까지 걸어가서 다른 노선 타기("바꾸면"이라고 쓰지 않는다).
+        - ALT_ROUTE: 같은 정류장에서 다른 노선으로 바꿔 타기. DETOUR: 다른 정류장까지 걸어가서 다른 노선 타기("다른 정류장까지 걸어가서 타면"처럼 쓰고 "바꾸면"이라고 쓰지 않는다).
         - OTHER_MODE: 버스 대신 다른 교통수단으로 가기. bySubway가 true면 지하철, 없으면 "다른 교통수단"이라고 쓴다.
 
         문장 수
@@ -96,8 +96,8 @@ public class ReasonService {
         답: {"KEEP":["6분 뒤 오는 버스를 여유 있게 탈 수 있어요"],"BACKTRACK":["이전 정류장까지 걸어가면 2분 늦어져요"]}
         입력: {"strategies":[{"strategyType":"BACKTRACK","recommended":true,"routeLabel":"5003A","diffMin":1,"extraWalkMin":4,"remainSeats":16,"seatStage":"OK","waitMin":7},{"strategyType":"KEEP","recommended":false,"routeLabel":"5003A","strategyRiskStage":"CAUTION","seatStage":"CAUTION","remainSeats":1,"waitMin":5,"cautionCause":"SEAT"}]}
         답: {"BACKTRACK":["이전 정류장에서 타면 예상 빈자리가 16석이에요","4분 더 걷지만 도착 시간은 비슷해요"],"KEEP":["5003A번은 빈자리가 1석뿐일 수 있어요"]}
-        입력: {"strategies":[{"strategyType":"OTHER_MODE","recommended":true,"bySubway":true,"diffMin":11},{"strategyType":"KEEP","recommended":false,"strategyRiskStage":"RISK","slackStage":"RISK","waitMin":3,"nextBusGapMin":15,"cautionCause":"SLACK"}]}
-        답: {"OTHER_MODE":["지하철로 가면 버스를 기다리지 않고 11분 빨리 도착해요"],"KEEP":["3분 뒤 버스라 빠듯하고 놓치면 15분 더 기다려요"]}
+        입력: {"strategies":[{"strategyType":"OTHER_MODE","recommended":true,"bySubway":true,"diffMin":11},{"strategyType":"KEEP","recommended":false,"strategyRiskStage":"RISK","slackStage":"RISK","waitMin":3,"nextBusGapMin":15,"cautionCause":"SLACK"},{"strategyType":"DETOUR","recommended":false,"routeLabel":"33-2","diffMin":4,"extraWalkMin":2}]}
+        답: {"OTHER_MODE":["지하철로 가면 버스를 기다리지 않고 11분 빨리 도착해요"],"KEEP":["3분 뒤 버스라 빠듯하고 놓치면 15분 더 기다려요"],"DETOUR":["다른 정류장까지 걸어가서 33-2번을 타면 4분 빨라요"]}
         입력: {"strategies":[{"strategyType":"KEEP","recommended":true,"routeLabel":"5003A","strategyRiskStage":"CAUTION","slackStage":"CAUTION","waitMin":4,"nextBusGapMin":20,"cautionCause":"SLACK"},{"strategyType":"DETOUR","recommended":false,"diffMin":-8,"extraWalkMin":6}]}
         답: {"KEEP":["4분 뒤 버스라 정류장까지 서둘러야 해요","그래도 다른 방법보다 늦지 않아요"],"DETOUR":["다른 정류장까지 6분 더 걷고 8분 늦게 도착해요"]}
 
@@ -127,7 +127,8 @@ public class ReasonService {
             .map(strategy -> fact(strategy, keepValue, now))
             .toList();
 
-        Map<StrategyType, List<String>> llm = mode == Mode.STRATEGY
+        // 전략이 하나뿐이면 비교할 것이 없어 문장 틀만 쓴다
+        Map<StrategyType, List<String>> llm = mode == Mode.STRATEGY && ranked.size() > 1
             ? llmReasons(facts)
             : Map.of();
 
@@ -167,10 +168,26 @@ public class ReasonService {
             bus == null || !predictedSeat ? null : bus.seatStage(),
             predictedSeat ? strategy.remainSeats() : null,
             predictedSeat ? strategy.seatType() : null,
-            minutes(now, strategy.busArrivalAt()),
+            busFirst(strategy) ? minutes(now, strategy.busArrivalAt()) : null,
             minutes(strategy.busArrivalAt(), strategy.nextBusArrivalAt()),
             cautionCause(strategy)
         );
+    }
+
+    /**
+     * 첫 대중교통이 버스면 true. 지하철을 먼저 타고 갈아타는 버스는
+     * "N분 뒤 버스"가 지금 기다리는 시간이 아니라서 대기 시간을 보내지 않는다.
+     */
+    static boolean busFirst(StrategyView strategy) {
+        if (strategy.route() == null) {
+            return true;
+        }
+
+        return strategy.route().segments().stream()
+            .filter(segment -> !"WALK".equals(segment.mode()))
+            .findFirst()
+            .map(segment -> "BUS".equals(segment.mode()))
+            .orElse(true);
     }
 
     // 다른 교통수단이 지하철을 타면 true, 아니면 보내지 않는다
