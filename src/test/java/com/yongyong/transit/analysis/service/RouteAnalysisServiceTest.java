@@ -158,7 +158,7 @@ class RouteAnalysisServiceTest {
         assertThat(failed.boardName()).isEqualTo("강남역");
         assertThat(failed.boardingStage()).isNull();
         assertThat(failed.predictedBusArrivalAt()).isNull();
-        verify(realtime, never()).getArrivals(eq(SEOUL_STOP), any(), any(), any());
+        verify(realtime, never()).getArrivals(eq(SEOUL_STOP), any(), any(), any(), any());
     }
 
     @Test
@@ -181,7 +181,7 @@ class RouteAnalysisServiceTest {
     void 버스가_없는_경로는_단계_null() {
         AnalysisResponse response = analyze(route(1, 64,
             walk(0, 5),
-            new RouteSegment(1, "SUBWAY", 50, "동백", null, null, null),
+            new RouteSegment(1, "SUBWAY", 50, "동백", null, null, null, null, null),
             walk(2, 9)
         ));
 
@@ -194,27 +194,27 @@ class RouteAnalysisServiceTest {
     @Test
     void 요청에_matchStatus가_있으면_그대로_사용() {
         RouteSegment givenFailed = new RouteSegment(
-            1, "BUS", 39, "동백2차", DONGBAEK, "FAILED",
+            1, "BUS", 39, "동백2차", null, DONGBAEK, null, "FAILED",
             List.of(option("5005", ROUTE_5005))
         );
 
         AnalysisResponse response = analyze(route(0, 58, givenFailed));
 
         assertThat(response.routes().get(0).analyzable()).isFalse();
-        verify(realtime, never()).getArrivals(anyString(), any(), any(), any());
+        verify(realtime, never()).getArrivals(anyString(), any(), any(), any(), any());
     }
 
     @Test
     void 요청이_MATCHED여도_정류장ID가_없으면_FAILED로_처리() {
         RouteSegment noStation = new RouteSegment(
-            1, "BUS", 39, "동백2차", null, "MATCHED",
+            1, "BUS", 39, "동백2차", null, null, null, "MATCHED",
             List.of(option("5005", ROUTE_5005))
         );
 
         AnalysisResponse response = analyze(route(0, 58, noStation));
 
         assertThat(response.routes().get(0).analyzable()).isFalse();
-        verify(realtime, never()).getArrivals(any(), any(), any(), any());
+        verify(realtime, never()).getArrivals(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -230,7 +230,7 @@ class RouteAnalysisServiceTest {
         );
 
         verify(realtime, times(1))
-            .getArrivals(eq(DONGBAEK), eq(Set.of(ROUTE_5005, ROUTE_5003A)), any(), any());
+            .getArrivals(eq(DONGBAEK), eq(Set.of(ROUTE_5005, ROUTE_5003A)), any(), any(), any());
         assertThat(response.routes().get(0).segments().get(0).routeLabel()).isEqualTo("5005");
         assertThat(response.routes().get(1).segments().get(0).routeLabel()).isEqualTo("5003A");
     }
@@ -243,7 +243,7 @@ class RouteAnalysisServiceTest {
             bus(0, 39, "동백2차", DONGBAEK, option("5005", ROUTE_5005))
         )).dataDelayed()).isTrue();
 
-        when(realtime.getArrivals(eq(DONGBAEK), any(), any(), any()))
+        when(realtime.getArrivals(eq(DONGBAEK), any(), any(), any(), any()))
             .thenReturn(new StationArrivals(List.of(), at("07:25"), false));
 
         assertThat(analyze(route(0, 58,
@@ -275,7 +275,7 @@ class RouteAnalysisServiceTest {
         boolean delayed,
         BusArrival... arrivals
     ) {
-        when(realtime.getArrivals(eq(stationId), any(), any(), any()))
+        when(realtime.getArrivals(eq(stationId), any(), any(), any(), any()))
             .thenReturn(new StationArrivals(
                 new ArrayList<>(List.of(arrivals)),
                 at("07:29"),
@@ -292,7 +292,9 @@ class RouteAnalysisServiceTest {
     }
 
     private static RouteSegment walk(int index, int minutes) {
-        return new RouteSegment(index, "WALK", minutes, null, null, null, List.of());
+        return new RouteSegment(
+            index, "WALK", minutes, null, null, null, null, null, List.of()
+        );
     }
 
     private static RouteSegment bus(
@@ -303,7 +305,8 @@ class RouteAnalysisServiceTest {
         BusOption... options
     ) {
         return new RouteSegment(
-            index, "BUS", minutes, startName, stationId, null, List.of(options)
+            index, "BUS", minutes, startName, null, stationId, null, null,
+            List.of(options)
         );
     }
 
