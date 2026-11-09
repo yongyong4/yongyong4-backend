@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit;
  * 경로 따라가기로 계산한다. 순서: 대체 노선 → 거슬러타기 → 우회 → 다른 교통수단.
  * - 대체 노선: 같은 승차·하차 정류장(하차는 같은 이름의 다른 승강장 포함)을 지나는
  *   다른 경기 노선 (GBIS 노선 정보). 항상 만든다
- * - 거슬러타기: 같은 노선의 앞 정류장. 현재 위치가 있고 버스에 타 있지 않을 때만.
+ * - 거슬러타기: 같은 노선의 이전 정류장. 현재 위치가 있고 버스에 타 있지 않을 때만.
  *   도보 시간은 카카오 도보 API (실패하면 직선거리로 대신)
  * - 우회·다른 교통수단: 다른 후보 경로(출발지 기준) 그대로. 버스에 타 있지 않을 때만
  * GBIS 호출은 요청당 한도(budget) 안에서만 하고, 한도를 넘으면 캐시만 쓴다.
@@ -239,9 +239,9 @@ public class AlternativeService {
     }
 
     /**
-     * 거슬러타기: 같은 노선의 앞 정류장 최대 5곳(가까운 순)으로 걸어가 탄다.
+     * 거슬러타기: 같은 노선의 이전 정류장 최대 5곳(가까운 순)으로 걸어가 탄다.
      * 첫 버스 앞이 도보뿐일 때만 만든다 (현재 위치에서 걸어가므로).
-     * 탑승 시간은 같은 차량이 앞 정류장 → 원래 정류장까지 걸린 시간을 더하고,
+     * 탑승 시간은 같은 차량이 이전 정류장 → 원래 정류장까지 걸린 시간을 더하고,
      * 같은 차량이 없으면 정류장 수 × 2분을 더한다.
      */
     private List<Candidate> backtracks(Context context, int busIndex) {
@@ -330,7 +330,7 @@ public class AlternativeService {
             evaluate(
                 context,
                 StrategyType.BACKTRACK,
-                "앞 정류장에서 " + label + "번 타기",
+                "이전 정류장에서 " + label + "번 타기",
                 withSegments(context.route(), changed),
                 1,
                 station.name(), station.x(), station.y(),
@@ -378,8 +378,8 @@ public class AlternativeService {
     }
 
     /**
-     * 앞 정류장이 예측 대상이 아니라 지금 좌석만 있으면,
-     * 같은 차량의 원래 정류장 예측 좌석과 비교해 작은 값을 쓴다 (앞 정류장이 더 좋아 보이지 않게).
+     * 이전 정류장이 예측 대상이 아니라 지금 좌석만 있으면,
+     * 같은 차량의 원래 정류장 예측 좌석과 비교해 작은 값을 쓴다 (이전 정류장이 더 좋아 보이지 않게).
      */
     private void conservativeSeats(
         Context context,
@@ -429,7 +429,7 @@ public class AlternativeService {
     }
 
     /**
-     * 앞 정류장 → 원래 정류장 버스 이동 시간.
+     * 이전 정류장 → 원래 정류장 버스 이동 시간.
      * 두 정류장 도착 목록에 같이 나오는 차량(차량번호)이 있으면 그 도착 시각 차이,
      * 없으면 정류장 수 × 2분.
      */

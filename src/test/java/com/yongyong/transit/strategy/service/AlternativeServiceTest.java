@@ -227,7 +227,7 @@ class AlternativeServiceTest {
         StrategyView backtrack =
             only(strategies(List.of(), HOME), StrategyType.BACKTRACK);
 
-        assertThat(backtrack.title()).isEqualTo("앞 정류장에서 5003A번 타기");
+        assertThat(backtrack.title()).isEqualTo("이전 정류장에서 5003A번 타기");
         assertThat(backtrack.moveToName()).isEqualTo("동백쥬네브");
         assertThat(backtrack.moveToX()).isEqualTo(127.1500);
         assertThat(backtrack.moveToY()).isEqualTo(37.2760);
