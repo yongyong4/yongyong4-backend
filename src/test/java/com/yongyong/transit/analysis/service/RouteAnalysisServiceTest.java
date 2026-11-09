@@ -7,6 +7,7 @@ import com.yongyong.transit.analysis.service.RouteAnalysisService.AnalysisRespon
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteAnalysis;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.RoutePlan;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteSegment;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.BusArrival;
@@ -20,6 +21,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -252,6 +254,66 @@ class RouteAnalysisServiceTest {
     }
 
     @Test
+    void 지하철끼리_갈아타면_빠진_시간을_다음_지하철_타기_전에_기다림() {
+        // 구간 합 51분, ODsay 총 59분 → 갈아타는 두 곳에 4분씩
+        RouteInput route = route(0, 59,
+            walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 18),
+            walk(4, 3), subway(5, 15), walk(6, 3)
+        );
+
+        RoutePlan plan = service.plan(route, Map.of(), Map.of(), false, NOW, NOW);
+
+        assertThat(plan.arrivalAt()).isEqualTo(at("08:29"));
+        // 도보는 07:42에 끝나고 지하철은 4분 기다린 07:46에 탐 (도보·탑승 시간은 그대로)
+        assertThat(plan.segments().get(2).plannedEndAt()).isEqualTo(at("07:42"));
+        assertThat(plan.segments().get(3).plannedStartAt()).isEqualTo(at("07:46"));
+        assertThat(plan.segments().get(3).plannedEndAt()).isEqualTo(at("08:04"));
+    }
+
+    @Test
+    void 환승_대기는_똑같이_나누고_나머지는_앞쪽부터() {
+        RouteInput route = route(0, 60,
+            walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 18),
+            walk(4, 3), subway(5, 15), walk(6, 3)
+        );
+
+        assertThat(service.transferWaits(route)).isEqualTo(Map.of(3, 5, 5, 4));
+    }
+
+    @Test
+    void 지하철끼리_갈아타는_곳이_없거나_총_시간이_없으면_대기를_넣지_않음() {
+        // 지하철 → 버스: 차이가 있어도 지하철끼리 갈아타지 않음
+        assertThat(service.transferWaits(route(0, 70,
+            walk(0, 1), subway(1, 10), walk(2, 2),
+            bus(3, 39, "동백2차", DONGBAEK, option("5005", ROUTE_5005))
+        ))).isEmpty();
+        // 구간 합과 총 시간이 같음
+        assertThat(service.transferWaits(route(0, 26,
+            walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 14)
+        ))).isEmpty();
+        // 재평가처럼 총 시간이 없음
+        assertThat(service.transferWaits(new RouteInput(0, null, List.of(
+            walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 14)
+        )))).isEmpty();
+    }
+
+    @Test
+    void 지하철_환승_뒤_버스는_대기만큼_늦게_정류장에_도착() {
+        // 07:30 + 도보 1 + 지하철 6 + 도보 5 + 대기 5 + 지하철 3 + 도보 1 = 07:51 정류장 도착
+        givenStation(DONGBAEK, false, arrival(ROUTE_5005, "5005", "07:54", 10));
+
+        AnalysisResponse response = analyze(route(0, 74,
+            walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 3), walk(4, 1),
+            bus(5, 49, "상갈역", DONGBAEK, option("5005", ROUTE_5005)),
+            walk(6, 4)
+        ));
+
+        SegmentView segment = response.routes().get(0).segments().get(0);
+        assertThat(segment.slackMin()).isEqualTo(3);
+        assertThat(segment.totalMinIfBoard()).isEqualTo(77);
+    }
+
+    @Test
     void routes가_없으면_400() {
         assertThatThrownBy(() -> service.analyze(new AnalysisRequest(null), NOW))
             .isInstanceOf(ResponseStatusException.class);
@@ -294,6 +356,12 @@ class RouteAnalysisServiceTest {
     private static RouteSegment walk(int index, int minutes) {
         return new RouteSegment(
             index, "WALK", minutes, null, null, null, null, null, List.of()
+        );
+    }
+
+    private static RouteSegment subway(int index, int minutes) {
+        return new RouteSegment(
+            index, "SUBWAY", minutes, null, null, null, null, null, List.of()
         );
     }
 

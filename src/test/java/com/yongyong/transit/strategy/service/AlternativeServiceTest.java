@@ -426,6 +426,32 @@ class AlternativeServiceTest {
     }
 
     @Test
+    void 다른_교통수단은_지하철_환승_대기까지_넣어_경로_API_시간과_같음() {
+        givenArrivals(DONGBAEK, arrival(ROUTE_5003A, "5003A", "A3", "07:45", 10));
+
+        // 다른 후보 경로: 지하철 3번, 구간 합 51분 + 환승 대기 4분씩 = 59분
+        StrategyResponse response = service.strategies(new StrategyRequest(
+            route(0, 58,
+                walk(0, 9),
+                bus(1, 45, "동백2차", DONGBAEK, "강남역", GANGNAM,
+                    option("5003A", ROUTE_5003A)),
+                walk(2, 4)
+            ),
+            List.of(route(1, 59,
+                walk(0, 1), subway(1, 6), walk(2, 5), subway(3, 18),
+                walk(4, 3), subway(5, 15), walk(6, 3)
+            )),
+            List.of(),
+            null
+        ), NOW);
+
+        StrategyView otherMode = only(response, StrategyType.OTHER_MODE);
+        assertThat(otherMode.totalMinIfBoard()).isEqualTo(59);
+        assertThat(otherMode.route().segments().get(3).plannedStartAt())
+            .isEqualTo(at("07:46"));
+    }
+
+    @Test
     void 지하철만_타는_경로는_대안을_만들지_않음() {
         StrategyResponse response = service.strategies(new StrategyRequest(
             route(0, 60, walk(0, 5), subway(1, 50), walk(2, 5)),

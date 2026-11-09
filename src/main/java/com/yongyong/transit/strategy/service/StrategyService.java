@@ -95,7 +95,10 @@ public class StrategyService {
 
     /**
      * 전략 계산 본체.
-     * route: 남은 구간만 넣어도 된다 (재평가)
+     * route: 남은 구간만 넣어도 된다 (재평가). 재평가로 DB 구간을 넘길 때는
+     *   - totalTimeMin은 null (지하철 환승 대기를 다시 계산하지 않게)
+     *   - 지하철 구간 시간은 planned_end − 앞 구간 planned_end (환승 대기 포함),
+     *     버스·도보는 planned_end − planned_start
      * alightAtBySegment: 지하철 구간 번호 → 사용자 하차 시각
      * baseTime: 경로를 따라가기 시작하는 시각 (처음 요청은 지금, 버스 탑승 중이면 하차 예정 시각)
      * 두 모드 모두 실시간 조회를 하고 요청당 GBIS 20회까지 쓴다.

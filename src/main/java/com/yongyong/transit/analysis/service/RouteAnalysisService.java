@@ -212,7 +212,9 @@ public class RouteAnalysisService {
      *   도착 정보가 없으면 t += durationMin (경로 API 시간으로 이어서 계산)
      * - FAILED 버스: t += durationMin
      * missFirstBus면 첫 MATCHED 버스는 다음 버스를 탄다. 다음 버스가 없으면 arrivalAt은 null.
+     * 지하철끼리 갈아타면 그 지하철을 타기 전에 환승 대기를 기다린다 (transferWaits).
      * 재평가는 남은 구간만 넣고 startAt(기준 시각)을 지정해 그대로 쓸 수 있다.
+     * 이때 totalTimeMin은 null로 넣는다 (남은 구간과 맞지 않아 대기가 잘못 계산된다).
      */
     public RoutePlan plan(
         RouteInput route,
@@ -234,6 +236,7 @@ public class RouteAnalysisService {
             }
         }
 
+        Map<Integer, Integer> waits = transferWaits(route);
         List<PlannedSegment> planned = new ArrayList<>();
         Stage routeStage = null;
         boolean firstMatchedPassed = false;
@@ -244,6 +247,7 @@ public class RouteAnalysisService {
             RouteSegment segment = segments.get(i);
             String status = matchStatus(segment);
             int durationMin = minutes(segment);
+            t = t.plusMinutes(waits.getOrDefault(i, 0));
 
             if (!MATCHED.equals(status)) {
                 OffsetDateTime end = t.plusMinutes(durationMin);
@@ -265,7 +269,7 @@ public class RouteAnalysisService {
             int afterMin = 0;
 
             for (int j = i + 1; j < segments.size(); j++) {
-                afterMin += minutes(segments.get(j));
+                afterMin += minutes(segments.get(j)) + waits.getOrDefault(j, 0);
             }
 
             Set<String> routeIds = gbisRouteIds(segment);
@@ -324,6 +328,54 @@ public class RouteAnalysisService {
             lastBusIndex >= 0,
             anyMatched
         );
+    }
+
+    /**
+     * 지하철 환승 대기: 구간 번호(리스트 순서) → 그 지하철을 타기 전 기다리는 분.
+     * ODsay는 지하철끼리 갈아탈 때 기다리는 시간을 totalTimeMin에만 넣고 구간에는 넣지 않는다.
+     * 빠진 시간(totalTimeMin − 구간 합)을 지하철끼리 갈아타는 곳에 똑같이 나누고,
+     * 나머지는 앞쪽부터 1분씩 준다. 총 시간이 없거나 빠진 시간이 없으면 비어 있다.
+     */
+    Map<Integer, Integer> transferWaits(RouteInput route) {
+        if (route.totalTimeMin() == null) {
+            return Map.of();
+        }
+
+        List<RouteSegment> segments = route.segments();
+        List<Integer> transfers = new ArrayList<>();
+        String previousTransit = null;
+        int sum = 0;
+
+        for (int i = 0; i < segments.size(); i++) {
+            RouteSegment segment = segments.get(i);
+            sum += minutes(segment);
+
+            if (WALK.equals(segment.mode())) {
+                continue;
+            }
+
+            if (SUBWAY.equals(segment.mode()) && SUBWAY.equals(previousTransit)) {
+                transfers.add(i);
+            }
+
+            previousTransit = segment.mode();
+        }
+
+        int missing = route.totalTimeMin() - sum;
+
+        if (missing <= 0 || transfers.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<Integer, Integer> result = new HashMap<>();
+
+        for (int k = 0; k < transfers.size(); k++) {
+            int wait = missing / transfers.size()
+                + (k < missing % transfers.size() ? 1 : 0);
+            result.put(transfers.get(k), wait);
+        }
+
+        return result;
     }
 
     private void validate(AnalysisRequest request) {
