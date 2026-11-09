@@ -417,7 +417,11 @@ public class StrategyService {
                 );
             }
 
-            result.put(update.segmentIndex(), update.userAlightAt());
+            // 요청이 UTC(Z)로 와도 응답의 다른 시각처럼 한국 시간으로 맞춘다
+            result.put(
+                update.segmentIndex(),
+                update.userAlightAt().withOffsetSameInstant(KST)
+            );
         }
 
         return result;

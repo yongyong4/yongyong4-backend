@@ -17,6 +17,7 @@ import com.yongyong.transit.analysis.service.SegmentAnalyzer.Stage;
 import com.yongyong.transit.route.walking.service.WalkingRouteService;
 import com.yongyong.transit.route.walking.service.WalkingRouteService.WalkingRouteResponse;
 import com.yongyong.transit.strategy.service.RouteStationService.CommonRoute;
+import com.yongyong.transit.strategy.service.StrategyService.AlightUpdate;
 import com.yongyong.transit.strategy.service.StrategyService.Location;
 import com.yongyong.transit.strategy.service.StrategyService.Mode;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyRequest;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -389,6 +391,38 @@ class AlternativeServiceTest {
         assertThat(types(response))
             .containsExactlyInAnyOrder(StrategyType.KEEP, StrategyType.ALT_ROUTE);
         verify(walking, never()).search(anyDouble(), anyDouble(), anyDouble(), anyDouble(), any());
+    }
+
+    @Test
+    void 하차_시각은_고른_경로에만_적용() {
+        givenArrivals(DONGBAEK, arrival(ROUTE_5003A, "5003A", "A3", "08:10", 3));
+
+        // 고른 경로: 지하철(구간 1) → 동백2차 5003A. 하차 시각을 08:00으로 고침
+        StrategyResponse response = service.strategies(new StrategyRequest(
+            route(0, 70,
+                walk(0, 3),
+                subway(1, 10),
+                walk(2, 2),
+                bus(3, 39, "동백2차", DONGBAEK, "강남역", GANGNAM,
+                    option("5003A", ROUTE_5003A))
+            ),
+            // 다른 후보 경로도 구간 1이 지하철 (07:35 → 08:25)
+            List.of(route(1, 60, walk(0, 5), subway(1, 50), walk(2, 5))),
+            // UTC로 보내도 한국 시간으로 저장
+            List.of(new AlightUpdate(1, at("08:00").withOffsetSameInstant(ZoneOffset.UTC))),
+            null
+        ), NOW);
+
+        // 다른 교통수단은 고친 하차 시각과 상관없이 경로 API 시간 그대로
+        StrategyView otherMode = only(response, StrategyType.OTHER_MODE);
+        assertThat(otherMode.totalMinIfBoard()).isEqualTo(60);
+        assertThat(otherMode.route().segments())
+            .allMatch(segment -> segment.userAlightAt() == null);
+
+        // 고른 경로(KEEP)에는 적용
+        StrategyView keep = only(response, StrategyType.KEEP);
+        assertThat(keep.route().segments())
+            .anyMatch(segment -> at("08:00").equals(segment.userAlightAt()));
     }
 
     @Test

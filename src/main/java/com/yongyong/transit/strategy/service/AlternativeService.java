@@ -573,6 +573,9 @@ public class AlternativeService {
      * 후보 경로를 경로 따라가기로 계산한다.
      * 바꾼 버스 구간(changedIndex)의 도착 시각을 모르거나 여유시간이 위험이면 버린다.
      * changedIndex가 -1이면(다른 교통수단) 확인하지 않는다.
+     * 사용자가 고친 지하철 하차 시각은 고른 경로의 구간이라, 고른 경로를 바꾼 후보
+     * (대체 노선·거슬러타기)에만 쓴다. 다른 후보 경로(우회·다른 교통수단)는 구간 번호가
+     * 같아도 다른 지하철일 수 있어 쓰지 않는다.
      */
     private Optional<Candidate> evaluate(
         Context context,
@@ -590,9 +593,13 @@ public class AlternativeService {
         }
 
         Map<String, StationArrivals> arrivals = context.store().arrivals();
+        Map<Integer, OffsetDateTime> alightAt =
+            type == StrategyType.DETOUR || type == StrategyType.OTHER_MODE
+                ? Map.of()
+                : context.alightAtBySegment();
 
         RoutePlan boardPlan = routeAnalysisService.plan(
-            route, arrivals, context.alightAtBySegment(),
+            route, arrivals, alightAt,
             false, context.baseTime(), context.now()
         );
 
@@ -607,7 +614,7 @@ public class AlternativeService {
         }
 
         RoutePlan missPlan = routeAnalysisService.plan(
-            route, arrivals, context.alightAtBySegment(),
+            route, arrivals, alightAt,
             true, context.baseTime(), context.now()
         );
 
