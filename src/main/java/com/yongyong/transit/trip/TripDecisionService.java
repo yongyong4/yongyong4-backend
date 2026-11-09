@@ -138,6 +138,21 @@ public class TripDecisionService {
             );
         }
 
+        // 현재 경로가 변경되었다면 이전 제안을 처리하지 않는다.
+        // 이미 처리된 동일 요청은 위에서 멱등 처리한다.
+        JsonNode suggestion = parseSuggestion(
+            evaluation.get("suggestion_json")
+        );
+        JsonNode originRouteId = suggestion.get("originRouteId");
+
+        if (originRouteId == null
+            || !originRouteId.isIntegralNumber()
+            || originRouteId.longValue() != currentRouteId) {
+            throw conflict(
+                "현재 경로가 변경되어 이전 제안을 처리할 수 없습니다."
+            );
+        }
+
         Timestamp respondedAt = Timestamp.valueOf(
             LocalDateTime.now(KST)
         );
@@ -178,10 +193,6 @@ public class TripDecisionService {
             );
         }
 
-        JsonNode suggestion = parseSuggestion(
-            evaluation.get("suggestion_json")
-        );
-
         JsonNode canAccept = suggestion.get("canAccept");
 
         if (canAccept != null
@@ -219,7 +230,6 @@ public class TripDecisionService {
             ? "AFTER_FAIL"
             : "SUGGESTED";
 
-        // 전략 이름이 아닌 새 경로의 이동 필요 여부로 상태 판단
         String nextStatus = determineNextStatus(
             strategyType, segments
         );
@@ -307,7 +317,6 @@ public class TripDecisionService {
         );
     }
 
-    // 새 경로의 첫 구간을 기준으로 상태 판단
     private String determineNextStatus(
         String strategyType,
         JsonNode segments
@@ -317,19 +326,16 @@ public class TripDecisionService {
         String firstMode = requiredText(firstSegment, "mode");
         Integer walkMin = optionalInt(firstSegment, "walkMin");
 
-        // 새 정류장까지 도보 이동이 필요한 경우
         if ("WALK".equals(firstMode)
             && walkMin != null
             && walkMin > 0) {
             return "MOVING";
         }
 
-        // 같은 정류장에서 대체 버스를 기다리는 경우
         if ("ALT_ROUTE".equals(strategyType)) {
             return "WAITING";
         }
 
-        // 거슬러타기, 우회, 다른 교통수단으로 이동
         return "MOVING";
     }
 
@@ -422,15 +428,21 @@ public class TripDecisionService {
     private void validateSegments(JsonNode segments) {
         for (JsonNode segment : segments) {
             String mode = requiredText(segment, "mode");
-            String matchStatus = requiredText(segment, "matchStatus");
+            String matchStatus = requiredText(
+                segment, "matchStatus"
+            );
 
             if (!Set.of("WALK", "BUS", "SUBWAY").contains(mode)) {
-                throw conflict("제안 경로의 이동수단이 올바르지 않습니다.");
+                throw conflict(
+                    "제안 경로의 이동수단이 올바르지 않습니다."
+                );
             }
 
             if (!Set.of("MATCHED", "FAILED", "NA")
                 .contains(matchStatus)) {
-                throw conflict("제안 경로의 매칭 상태가 올바르지 않습니다.");
+                throw conflict(
+                    "제안 경로의 매칭 상태가 올바르지 않습니다."
+                );
             }
 
             optionalTime(segment, "plannedStartAt");
@@ -440,20 +452,26 @@ public class TripDecisionService {
             Integer walkMin = optionalInt(segment, "walkMin");
 
             if (walkMin != null && walkMin < 0) {
-                throw conflict("제안 경로의 도보 시간이 올바르지 않습니다.");
+                throw conflict(
+                    "제안 경로의 도보 시간이 올바르지 않습니다."
+                );
             }
         }
     }
 
     private JsonNode parseSuggestion(Object value) {
         if (value == null) {
-            throw conflict("저장된 경로 변경 제안이 없습니다.");
+            throw conflict(
+                "저장된 경로 변경 제안이 없습니다."
+            );
         }
 
         try {
             return jsonMapper.readTree(value.toString());
         } catch (Exception e) {
-            throw conflict("저장된 경로 변경 제안을 읽을 수 없습니다.");
+            throw conflict(
+                "저장된 경로 변경 제안을 읽을 수 없습니다."
+            );
         }
     }
 
@@ -475,7 +493,9 @@ public class TripDecisionService {
         }
 
         if (!value.isTextual()) {
-            throw badRequest(field + " 형식이 올바르지 않습니다.");
+            throw badRequest(
+                field + " 형식이 올바르지 않습니다."
+            );
         }
 
         return value.asText();
@@ -489,7 +509,9 @@ public class TripDecisionService {
         }
 
         if (!value.isInt()) {
-            throw badRequest(field + " 형식이 올바르지 않습니다.");
+            throw badRequest(
+                field + " 형식이 올바르지 않습니다."
+            );
         }
 
         return value.intValue();
@@ -509,7 +531,9 @@ public class TripDecisionService {
 
             return Timestamp.valueOf(time);
         } catch (Exception e) {
-            throw badRequest(field + " 시각 형식이 올바르지 않습니다.");
+            throw badRequest(
+                field + " 시각 형식이 올바르지 않습니다."
+            );
         }
     }
 
@@ -572,14 +596,18 @@ public class TripDecisionService {
         return result;
     }
 
-    private ResponseStatusException badRequest(String message) {
+    private ResponseStatusException badRequest(
+        String message
+    ) {
         return new ResponseStatusException(
             HttpStatus.BAD_REQUEST,
             message
         );
     }
 
-    private ResponseStatusException conflict(String message) {
+    private ResponseStatusException conflict(
+        String message
+    ) {
         return new ResponseStatusException(
             HttpStatus.CONFLICT,
             message
