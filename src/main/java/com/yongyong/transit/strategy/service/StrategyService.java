@@ -110,8 +110,9 @@ public class StrategyService {
         Mode mode,
         OffsetDateTime now
     ) {
-        CallBudget budget = CallBudget.of(CALL_LIMIT_PER_REQUEST);
-        ArrivalStore store = new ArrivalStore(
+        CallBudget budget = mode == Mode.REEVALUATION
+            ? CallBudget.none()
+            : CallBudget.of(CALL_LIMIT_PER_REQUEST);        ArrivalStore store = new ArrivalStore(
             busRealtimeService, routeAnalysisService, now, budget
         );
         store.load(route);
