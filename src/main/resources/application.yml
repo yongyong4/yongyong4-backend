@@ -1,10 +1,6 @@
 spring:
   application:
     name: yongyong-be
-  web:
-    error:
-      # 400 응답에 잘못된 입력 이유를 보여준다
-      include-message: always
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/yongyong?connectionTimeZone=Asia/Seoul}
     username: ${MYSQL_USER:root}
