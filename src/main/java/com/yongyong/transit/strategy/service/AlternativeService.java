@@ -3,6 +3,7 @@ package com.yongyong.transit.strategy.service;
 import com.yongyong.transit.analysis.client.GbisClient.RouteStation;
 import com.yongyong.transit.analysis.client.GbisClient.StationRoute;
 import com.yongyong.transit.analysis.service.BusRealtimeService.StationArrivals;
+import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
@@ -50,6 +51,7 @@ public class AlternativeService {
     static final int MIN_PER_STATION = 2;
 
     private static final long WALK_API_TIMEOUT_MS = 2000;
+    private static final long CURRENT_WALK_API_TIMEOUT_MS = 1000;
     private static final String WALK_ROUTE_MODE = "SHORTEST";
 
     private static final double WALK_DETOUR_RATIO = 1.3;
@@ -365,6 +367,40 @@ public class AlternativeService {
         }
 
         return result;
+    }
+
+    /**
+     * 현재 위치에서 노선의 정류장까지 걷는 시간(분). 재평가 이동 중 남은 도보에 쓴다.
+     * 정류장 좌표는 저장된 노선 정보에서만 찾고(GBIS 호출 없음), 도보 API가 1초 안에 안 오면 직선거리로 어림한다.
+     * 정류장 좌표를 못 찾으면 null.
+     */
+    public Integer walkMinToStation(
+        Location from,
+        String routeId,
+        String stationId,
+        OffsetDateTime now
+    ) {
+        RouteStation station = routeStationService
+            .routeStations(routeId, CallBudget.none(), now)
+            .stream()
+            .filter(s -> stationId.equals(s.stationId()))
+            .filter(s -> s.x() != null && s.y() != null)
+            .findFirst()
+            .orElse(null);
+
+        if (station == null) {
+            return null;
+        }
+
+        Integer walkMin = CompletableFuture
+            .supplyAsync(() -> kakaoWalkMin(from, station))
+            .completeOnTimeout(null, CURRENT_WALK_API_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .exceptionally(e -> null)
+            .join();
+
+        return walkMin != null
+            ? walkMin
+            : walkMin(from, station.x(), station.y());
     }
 
     private Integer kakaoWalkMin(Location from, RouteStation station) {

@@ -137,21 +137,6 @@ public class TripReevaluationService {
             from, original.size()
         );
 
-        Map<Integer, OffsetDateTime> alightAtBySegment =
-            new HashMap<>();
-
-        for (int i = 0; i < remaining.size(); i++) {
-            DbLeg leg = remaining.get(i);
-
-            if ("SUBWAY".equals(leg.mode())
-                && leg.userAlightAt() != null) {
-                alightAtBySegment.put(
-                    i,
-                    leg.userAlightAt()
-                );
-            }
-        }
-
         OffsetDateTime baseTime = now;
 
         if ("BOARDED".equals(status) && boardedSeq > 0) {
@@ -170,40 +155,78 @@ public class TripReevaluationService {
         }
 
         int remainingWalk = 0;
+        boolean walking = "MOVING".equals(status);
 
-        if ("MOVING".equals(status)) {
-            int originalWalk = 0;
+        // 남은 도보: 보낸 값 → 현재 위치로 계산 → 경과 시간으로 추정
+        if (walking) {
+            Integer reliableWalk = requestedWalk != null
+                ? requestedWalk
+                : walkFromLocation(location, remaining, target, now);
 
-            for (DbLeg leg : remaining) {
-                if (!"WALK".equals(leg.mode())) {
-                    break;
+            if (reliableWalk != null) {
+                remainingWalk = reliableWalk;
+            } else {
+                int originalWalk = 0;
+
+                for (DbLeg leg : remaining) {
+                    if (!"WALK".equals(leg.mode())) {
+                        break;
+                    }
+                    originalWalk += leg.walkMin() != null
+                        ? leg.walkMin()
+                        : durationMin(
+                        leg.plannedStartAt(), leg.plannedEndAt()
+                    );
                 }
-                originalWalk += leg.walkMin() != null
-                    ? leg.walkMin()
-                    : durationMin(
-                    leg.plannedStartAt(), leg.plannedEndAt()
+
+                OffsetDateTime movingSince = latestMovingAt(tripId);
+                if (movingSince == null) {
+                    movingSince = asTime(trip.get("started_at"));
+                }
+
+                long elapsed = movingSince == null ? 0
+                    : Math.max(
+                    0, Duration.between(movingSince, now).toMinutes()
+                );
+
+                remainingWalk = (int) Math.max(0, originalWalk - elapsed);
+            }
+
+            // 보낸 값이나 위치로 0분이면 정류장에 도착한 것으로 보고 도보 구간을 뺀다
+            if (reliableWalk != null && reliableWalk == 0) {
+                int firstNonWalk = 0;
+                while (firstNonWalk < remaining.size()
+                    && "WALK".equals(remaining.get(firstNonWalk).mode())) {
+                    firstNonWalk++;
+                }
+                if (firstNonWalk < remaining.size()) {
+                    remaining = remaining.subList(
+                        firstNonWalk, remaining.size()
+                    );
+                    walking = false;
+                }
+            }
+        }
+
+        Map<Integer, OffsetDateTime> alightAtBySegment =
+            new HashMap<>();
+
+        for (int i = 0; i < remaining.size(); i++) {
+            DbLeg leg = remaining.get(i);
+
+            if ("SUBWAY".equals(leg.mode())
+                && leg.userAlightAt() != null) {
+                alightAtBySegment.put(
+                    i,
+                    leg.userAlightAt()
                 );
             }
-
-            OffsetDateTime movingSince = latestMovingAt(tripId);
-            if (movingSince == null) {
-                movingSince = asTime(trip.get("started_at"));
-            }
-
-            long elapsed = movingSince == null ? 0
-                : Math.max(
-                0, Duration.between(movingSince, now).toMinutes()
-            );
-
-            remainingWalk = requestedWalk != null
-                ? requestedWalk
-                : (int) Math.max(0, originalWalk - elapsed);
         }
 
         RouteInput currentRoute = buildRoute(
             remaining,
             remainingWalk,
-            "MOVING".equals(status)
+            walking
         );
 
         List<RouteInput> alternatives = savedAlternatives(
@@ -740,6 +763,40 @@ public class TripReevaluationService {
             matchStatus,
             options
         );
+    }
+
+    /**
+     * 현재 위치에서 다음 버스 승차 정류장까지 걷는 시간(분).
+     * 다음 버스 전 남은 구간이 모두 도보일 때만 계산하고, 못 구하면 null.
+     */
+    private Integer walkFromLocation(
+        Location location,
+        List<DbLeg> remaining,
+        DbLeg target,
+        OffsetDateTime now
+    ) {
+        if (location == null
+            || target == null
+            || target.gbisRouteId() == null
+            || target.boardStationId() == null) {
+            return null;
+        }
+
+        for (DbLeg leg : remaining) {
+            if (leg == target) {
+                return strategies.walkMinToStation(
+                    location,
+                    target.gbisRouteId(),
+                    target.boardStationId(),
+                    now
+                );
+            }
+            if (!"WALK".equals(leg.mode())) {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private RouteInput buildRoute(

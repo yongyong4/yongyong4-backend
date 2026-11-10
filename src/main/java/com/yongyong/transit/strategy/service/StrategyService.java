@@ -201,6 +201,16 @@ public class StrategyService {
         );
     }
 
+    // 재평가: 현재 위치에서 승차 정류장까지 남은 도보(분). 정류장 좌표를 못 찾으면 null.
+    public Integer walkMinToStation(
+        Location from,
+        String routeId,
+        String stationId,
+        OffsetDateTime now
+    ) {
+        return alternativeService.walkMinToStation(from, routeId, stationId, now);
+    }
+
     /**
      * 전략 카드 하나. KEEP과 대안 모두 같은 방식으로 만든다.
      * 버스가 없는 경로(지하철만·다른 교통수단)는 단계 OK, 놓쳤을 때도 같은 시간.
