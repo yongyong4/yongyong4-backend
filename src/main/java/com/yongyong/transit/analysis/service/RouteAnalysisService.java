@@ -283,6 +283,9 @@ public class RouteAnalysisService {
                     .filter(arrival -> routeIds.contains(arrival.routeId()))
                     .toList();
 
+            // 경로가 버스로 시작하고 기준 시각이 지금이면 이미 승차 정류장에 있는 것
+            boolean atStop = i == 0 && !startAt.isAfter(now);
+
             // 앞 도보는 이미 t에 들어 있으므로 walkMin 0, 기준 시각 t
             SegmentResult result = segmentAnalyzer.analyze(
                 new SegmentAnalyzer.SegmentInput(
@@ -295,7 +298,8 @@ public class RouteAnalysisService {
                     afterMin,
                     i == lastBusIndex,
                     arrivals,
-                    now
+                    now,
+                    atStop
                 )
             );
 
