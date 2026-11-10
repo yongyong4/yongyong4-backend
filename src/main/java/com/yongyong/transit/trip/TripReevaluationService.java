@@ -251,7 +251,7 @@ public class TripReevaluationService {
         String error = null;
 
         // 기능 3의 공통 전략 비교 로직 사용
-        // REEVALUATION 모드에서는 CallBudget.none() 적용
+        // 재평가 1회 전체가 GBIS 1회(gbisBudget)를 같이 쓴다
         if (!remaining.isEmpty()) {
             try {
                 evaluated = strategies.evaluate(
@@ -413,10 +413,13 @@ public class TripReevaluationService {
         OffsetDateTime dataBasisAt = evaluated == null
             ? null : evaluated.dataBasisAt();
 
-        boolean delayed = evaluated == null
-            || evaluated.dataDelayed()
-            || dataBasisAt == null
-            || Duration.between(dataBasisAt, now).getSeconds() >= 240;
+        // 남은 버스가 없으면(마지막 버스 탑승 중 등) 볼 실시간 정보가 없으므로 지연이 아니다
+        boolean delayed = target != null && (
+            evaluated == null
+                || evaluated.dataDelayed()
+                || dataBasisAt == null
+                || Duration.between(dataBasisAt, now).getSeconds() >= 240
+        );
 
         long latencyMs = Duration.ofNanos(
             System.nanoTime() - startedNs
