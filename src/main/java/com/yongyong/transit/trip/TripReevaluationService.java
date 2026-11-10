@@ -33,6 +33,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -103,6 +104,10 @@ public class TripReevaluationService {
             throw conflict("현재 경로에 이동 구간이 없습니다.");
         }
 
+        if (applyAlightUpdates(request, routeId, original, now)) {
+            original = readLegs(routeId);
+        }
+
         int boardedSeq = latestBoardedSeq(tripId, routeId);
         int nextBusIndex = -1;
 
@@ -131,6 +136,21 @@ public class TripReevaluationService {
         List<DbLeg> remaining = original.subList(
             from, original.size()
         );
+
+        Map<Integer, OffsetDateTime> alightAtBySegment =
+            new HashMap<>();
+
+        for (int i = 0; i < remaining.size(); i++) {
+            DbLeg leg = remaining.get(i);
+
+            if ("SUBWAY".equals(leg.mode())
+                && leg.userAlightAt() != null) {
+                alightAtBySegment.put(
+                    i,
+                    leg.userAlightAt()
+                );
+            }
+        }
 
         OffsetDateTime baseTime = now;
 
@@ -204,7 +224,7 @@ public class TripReevaluationService {
                 evaluated = strategies.evaluate(
                     currentRoute,
                     alternatives,
-                    Map.of(),
+                    alightAtBySegment,
                     location,
                     baseTime,
                     Mode.REEVALUATION,
@@ -1204,6 +1224,116 @@ public class TripReevaluationService {
             ? null
             : asTime(rows.get(0).get("changed_at"));
     }
+
+    private boolean applyAlightUpdates(
+        JsonNode request,
+        long routeId,
+        List<DbLeg> currentLegs,
+        OffsetDateTime now
+    ) {
+        JsonNode updates = request == null
+            ? null : request.get("alightUpdates");
+
+        if (updates == null || updates.isNull()) {
+            return false;
+        }
+
+        if (!updates.isArray()
+            || updates.isEmpty()
+            || updates.size() > 10) {
+            throw badRequest(
+                "alightUpdates는 1~10개의 수정 항목이어야 합니다."
+            );
+        }
+
+        Set<Long> seen = new HashSet<>();
+        List<AlightChange> changes = new ArrayList<>();
+
+        for (JsonNode update : updates) {
+            if (update == null || !update.isObject()) {
+                throw badRequest(
+                    "하차 시각 수정 항목이 올바르지 않습니다."
+                );
+            }
+
+            JsonNode segmentNode = update.get("segmentId");
+
+            if (segmentNode == null
+                || !segmentNode.isIntegralNumber()
+                || segmentNode.longValue() <= 0) {
+                throw badRequest(
+                    "올바른 segmentId가 필요합니다."
+                );
+            }
+
+            long segmentId = segmentNode.longValue();
+
+            if (!seen.add(segmentId)) {
+                throw badRequest(
+                    "동일한 구간을 중복 수정할 수 없습니다."
+                );
+            }
+
+            DbLeg target = currentLegs.stream()
+                .filter(leg -> leg.segmentId() == segmentId)
+                .findFirst()
+                .orElse(null);
+
+            if (target == null
+                || !"SUBWAY".equals(target.mode())) {
+                throw badRequest(
+                    "현재 경로의 지하철 구간만 수정할 수 있습니다."
+                );
+            }
+
+            String value = requiredText(
+                update, "userAlightAt"
+            );
+
+            OffsetDateTime alightAt;
+
+            try {
+                alightAt = OffsetDateTime.parse(value)
+                    .withOffsetSameInstant(KST);
+            } catch (RuntimeException e) {
+                throw badRequest(
+                    "userAlightAt은 시간대가 포함된 ISO 시각이어야 합니다."
+                );
+            }
+
+            if (!alightAt.isAfter(now)) {
+                throw badRequest(
+                    "하차 예정 시각은 현재 시각 이후여야 합니다."
+                );
+            }
+
+            changes.add(
+                new AlightChange(segmentId, alightAt)
+            );
+        }
+
+        for (AlightChange change : changes) {
+            jdbc.update(
+                """
+                UPDATE segment
+                SET user_alight_at = ?
+                WHERE segment_id = ?
+                  AND trip_route_id = ?
+                  AND mode = 'SUBWAY'
+                """,
+                timestamp(change.alightAt()),
+                change.segmentId(),
+                routeId
+            );
+        }
+
+        return true;
+    }
+
+    private record AlightChange(
+        long segmentId,
+        OffsetDateTime alightAt
+    ) {}
 
     private Map<String, Object> ownedTrip(
         String deviceId,
