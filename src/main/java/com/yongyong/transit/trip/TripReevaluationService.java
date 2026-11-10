@@ -407,7 +407,7 @@ public class TripReevaluationService {
             : null;
 
         ObjectNode suggestion = propose
-            ? createSuggestion(best, routeId, savedMin)
+            ? createSuggestion(best, routeId, savedMin, target)
             : null;
 
         OffsetDateTime dataBasisAt = evaluated == null
@@ -909,23 +909,49 @@ public class TripReevaluationService {
         return wait;
     }
 
+    // 다른 노선이면 "N번으로 바꾸기", 같은 노선이면 "N번 타고 (하차 정류장)에서 내리기"
+    private String alternativeTitle(StrategyView view, DbLeg target) {
+        TripSegment bus = view.route().segments().stream()
+            .filter(segment -> "BUS".equals(segment.mode()))
+            .findFirst()
+            .orElse(null);
+
+        if (bus == null || bus.routeLabel() == null) {
+            return "다른 경로로 바꾸기";
+        }
+
+        boolean sameLine = target != null
+            && Objects.equals(bus.routeLabel(), target.routeLabel());
+
+        if (sameLine && bus.alightName() != null) {
+            return bus.routeLabel() + "번 타고 " + bus.alightName() + "에서 내리기";
+        }
+
+        return bus.routeLabel() + "번으로 바꾸기";
+    }
+
     private ObjectNode createSuggestion(
         StrategyView view,
         long originRouteId,
-        int savedMin
+        int savedMin,
+        DbLeg target
     ) {
         ObjectNode root = jsonMapper.createObjectNode();
 
         String strategy = view.strategyType().name();
+        String title = view.title();
+
+        // 저장된 대안을 따로 평가하면 KEEP 문구("그대로 N번 타기")가 오므로 제목을 다시 만든다
         if ("KEEP".equals(strategy)) {
             strategy = "ALT_ROUTE";
+            title = alternativeTitle(view, target);
         }
 
         root.put("strategyType", strategy);
         root.put("originRouteId", originRouteId);
         root.put("canAccept", true);
         root.put("savedMinutes", savedMin);
-        root.put("title", view.title());
+        root.put("title", title);
         root.put(
             "reason",
             savedMin > 0
