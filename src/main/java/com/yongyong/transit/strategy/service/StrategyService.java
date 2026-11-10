@@ -113,9 +113,32 @@ public class StrategyService {
         Mode mode,
         OffsetDateTime now
     ) {
-        CallBudget budget = mode == Mode.REEVALUATION
-            ? CallBudget.none()
-            : CallBudget.of(CALL_LIMIT_PER_REQUEST);        ArrivalStore store = new ArrivalStore(
+        return evaluate(
+            route,
+            alternativeRoutes,
+            alightAtBySegment,
+            currentLocation,
+            baseTime,
+            mode,
+            now,
+            CallBudget.of(
+                mode == Mode.REEVALUATION
+                    ? 1
+                    : CALL_LIMIT_PER_REQUEST
+            )
+        );
+    }
+
+    public StrategyResponse evaluate(
+        RouteInput route,
+        List<RouteInput> alternativeRoutes,
+        Map<Integer, OffsetDateTime> alightAtBySegment,
+        Location currentLocation,
+        OffsetDateTime baseTime,
+        Mode mode,
+        OffsetDateTime now,
+        CallBudget budget
+    ) {        ArrivalStore store = new ArrivalStore(
             busRealtimeService, routeAnalysisService, now, budget
         );
         store.load(route);
