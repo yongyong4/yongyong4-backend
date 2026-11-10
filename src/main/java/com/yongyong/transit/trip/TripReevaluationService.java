@@ -1,6 +1,7 @@
 
 package com.yongyong.transit.trip;
 
+import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteSegment;
@@ -70,6 +71,7 @@ public class TripReevaluationService {
         JsonNode request
     ) {
         long startedNs = System.nanoTime();
+        CallBudget gbisBudget = CallBudget.of(1);
         checkDevice(deviceId);
 
         String trigger = requiredText(request, "triggerType");
@@ -206,7 +208,8 @@ public class TripReevaluationService {
                     location,
                     baseTime,
                     Mode.REEVALUATION,
-                    now
+                    now,
+                    gbisBudget
                 );
 
                 for (StrategyView view : evaluated.strategies()) {
@@ -253,8 +256,9 @@ public class TripReevaluationService {
                         null,
                         baseTime,
                         Mode.REEVALUATION,
-                        now
-                    );
+                    now,
+                    gbisBudget
+                );
 
                     separate.strategies().stream()
                         .filter(StrategyView::isCurrent)

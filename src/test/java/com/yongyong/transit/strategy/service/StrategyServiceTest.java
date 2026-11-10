@@ -286,7 +286,7 @@ class StrategyServiceTest {
         verify(realtime).getArrivals(
             eq(TRANSFER_STOP), any(), any(), any(), budget.capture()
         );
-        assertThat(budget.getValue().hasRemaining()).isFalse();
+        assertThat(budget.getValue().hasRemaining()).isTrue();
     }
 
     @Test

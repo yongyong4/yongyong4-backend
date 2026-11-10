@@ -208,7 +208,8 @@ class TripReevaluationServiceTest {
             isNull(),
             any(OffsetDateTime.class),
             eq(Mode.REEVALUATION),
-            any(OffsetDateTime.class)
+            any(OffsetDateTime.class),
+            any(com.yongyong.transit.analysis.service.CallBudget.class)
         );
 
         assertThat(result.get("evaluationId"))
@@ -249,7 +250,8 @@ class TripReevaluationServiceTest {
             isNull(),
             any(OffsetDateTime.class),
             eq(Mode.REEVALUATION),
-            any(OffsetDateTime.class)
+            any(OffsetDateTime.class),
+            any(com.yongyong.transit.analysis.service.CallBudget.class)
         )).thenReturn(response);
     }
 
