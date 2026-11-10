@@ -229,10 +229,20 @@ public class TripReevaluationService {
             walking
         );
 
+        // 다음 버스 전까지 남은 구간(도보 등). 같은 정류장에서 타는 대안 앞에 붙인다
+        List<RouteSegment> beforeBus = new ArrayList<>();
+        for (RouteSegment segment : currentRoute.segments()) {
+            if ("BUS".equals(segment.mode())) {
+                break;
+            }
+            beforeBus.add(segment);
+        }
+
         List<RouteInput> alternatives = savedAlternatives(
             trip.get("alt_routes_json"),
             target,
-            currentStationId
+            currentStationId,
+            beforeBus
         );
 
         StrategyResponse evaluated = null;
@@ -562,7 +572,8 @@ public class TripReevaluationService {
     private List<RouteInput> savedAlternatives(
         Object raw,
         DbLeg target,
-        String stationId
+        String stationId,
+        List<RouteSegment> beforeBus
     ) {
         if (raw == null || target == null) {
             return List.of();
@@ -636,13 +647,19 @@ public class TripReevaluationService {
                 continue;
             }
 
+            // 저장된 대안의 앞 도보는 출발 당시 값이라 버리고,
+            // 현재 경로와 같은 정류장에서 타면 지금 남은 구간을 앞에 붙인다
+            List<RouteSegment> segmentsFromNow = new ArrayList<>();
+            if (Objects.equals(target.boardStationId(), firstBoard)) {
+                segmentsFromNow.addAll(beforeBus);
+            }
+            segmentsFromNow.addAll(parsed.subList(firstBus, parsed.size()));
+
             result.add(
                 new RouteInput(
                     result.size(),
                     null,
-                    renumber(
-                        parsed.subList(firstBus, parsed.size())
-                    )
+                    renumber(segmentsFromNow)
                 )
             );
         }
