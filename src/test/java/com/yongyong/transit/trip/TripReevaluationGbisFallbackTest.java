@@ -1,3 +1,4 @@
+
 package com.yongyong.transit.trip;
 
 import com.yongyong.transit.analysis.client.GbisClient;
@@ -105,8 +106,7 @@ class TripReevaluationGbisFallbackTest {
 
         CollectorSnapshot snapshot = new CollectorSnapshot(
             Map.of(STATION, List.of(arrival)),
-            Set.of(ROUTE),
-            Set.of(STATION)
+            Set.of(ROUTE)
         );
 
         CallBudget budget = CallBudget.of(1);
