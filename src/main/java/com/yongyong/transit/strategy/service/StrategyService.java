@@ -101,7 +101,7 @@ public class StrategyService {
      *     버스·도보는 planned_end − planned_start
      * alightAtBySegment: 지하철 구간 번호 → 사용자 하차 시각
      * baseTime: 경로를 따라가기 시작하는 시각 (처음 요청은 지금, 버스 탑승 중이면 하차 예정 시각)
-     * 두 모드 모두 실시간 조회를 하고 요청당 GBIS 20회까지 쓴다.
+     * 두 모드 모두 실시간 조회를 한다. GBIS는 처음 요청은 요청당 20회, 재평가는 재평가 1회 전체에서 1회까지 쓴다.
      * 재평가는 근거 문장에 LLM을 부르지 않고 문장 틀만 쓴다.
      */
     public StrategyResponse evaluate(
@@ -138,7 +138,8 @@ public class StrategyService {
         Mode mode,
         OffsetDateTime now,
         CallBudget budget
-    ) {        ArrivalStore store = new ArrivalStore(
+    ) {
+        ArrivalStore store = new ArrivalStore(
             busRealtimeService, routeAnalysisService, now, budget
         );
         store.load(route);
@@ -199,6 +200,16 @@ public class StrategyService {
             routeAnalysisService.toAnalysis(route, boardPlan),
             strategies
         );
+    }
+
+    // 재평가: 현재 위치에서 승차 정류장까지 남은 도보(분). 정류장 좌표를 못 찾으면 null.
+    public Integer walkMinToStation(
+        Location from,
+        String routeId,
+        String stationId,
+        OffsetDateTime now
+    ) {
+        return alternativeService.walkMinToStation(from, routeId, stationId, now);
     }
 
     /**

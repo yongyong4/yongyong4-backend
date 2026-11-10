@@ -45,9 +45,10 @@ public class SegmentAnalyzer {
             .between(readyAt, board.arrivalAt())
             .toMinutes();
 
+        // 이미 정류장에 있으면 오는 버스를 기다리면 되므로 여유시간은 문제없다
         Stage slackStage = stale
             ? Stage.UNKNOWN
-            : slackStage(slackMin);
+            : input.atStop() ? Stage.OK : slackStage(slackMin);
 
         Stage seatStage = stale
             ? Stage.UNKNOWN
@@ -243,7 +244,8 @@ public class SegmentAnalyzer {
         int afterMin,
         boolean lastBusSegment,
         List<BusArrival> arrivals,
-        OffsetDateTime now
+        OffsetDateTime now,
+        boolean atStop
     ) {
     }
 

@@ -314,6 +314,41 @@ class RouteAnalysisServiceTest {
     }
 
     @Test
+    void 버스로_시작하고_기준이_지금이면_정류장에_있으므로_곧_오는_버스도_여유OK() {
+        // 1분 뒤 버스: 걸어가야 하면 RISK지만 이미 정류장에 있으면 탈 수 있음
+        Map<String, StationArrivals> arrivals = Map.of(DONGBAEK, new StationArrivals(
+            List.of(arrival(ROUTE_5005, "5005", "07:31", 10)), at("07:29"), false
+        ));
+
+        RoutePlan atStop = service.plan(route(0, 40,
+            bus(0, 39, "동백2차", DONGBAEK, option("5005", ROUTE_5005))
+        ), arrivals, Map.of(), false, NOW, NOW);
+
+        RoutePlan walking = service.plan(route(0, 41,
+            walk(0, 0),
+            bus(1, 39, "동백2차", DONGBAEK, option("5005", ROUTE_5005))
+        ), arrivals, Map.of(), false, NOW, NOW);
+
+        assertThat(atStop.firstBus().slackMin()).isEqualTo(1);
+        assertThat(atStop.firstBus().slackStage()).isEqualTo(Stage.OK);
+        assertThat(walking.firstBus().slackStage()).isEqualTo(Stage.RISK);
+    }
+
+    @Test
+    void 기준_시각이_나중이면_버스로_시작해도_정류장에_있는_것으로_보지_않음() {
+        // 앞 버스에서 07:40에 내려 같은 정류장에서 갈아타는 경우
+        Map<String, StationArrivals> arrivals = Map.of(DONGBAEK, new StationArrivals(
+            List.of(arrival(ROUTE_5005, "5005", "07:41", 10)), at("07:29"), false
+        ));
+
+        RoutePlan plan = service.plan(route(0, 40,
+            bus(0, 39, "동백2차", DONGBAEK, option("5005", ROUTE_5005))
+        ), arrivals, Map.of(), false, at("07:40"), NOW);
+
+        assertThat(plan.firstBus().slackStage()).isEqualTo(Stage.RISK);
+    }
+
+    @Test
     void routes가_없으면_400() {
         assertThatThrownBy(() -> service.analyze(new AnalysisRequest(null), NOW))
             .isInstanceOf(ResponseStatusException.class);
