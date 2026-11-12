@@ -1,3 +1,4 @@
+
 package com.yongyong.transit.analysis.service;
 
 import com.yongyong.transit.analysis.service.BusRealtimeService.CollectorSnapshot;
@@ -155,8 +156,8 @@ public class RouteAnalysisService {
             .stream()
             .anyMatch(StationArrivals::delayed)
             || (basis != null
-                && Duration.between(basis, now).getSeconds()
-                    >= DELAYED_SECONDS);
+            && Duration.between(basis, now).getSeconds()
+            >= DELAYED_SECONDS);
     }
 
     public RouteAnalysis analyzeRoute(
@@ -279,9 +280,9 @@ public class RouteAnalysisService {
             List<BusArrival> arrivals = stationArrivals == null
                 ? List.of()
                 : stationArrivals.arrivals()
-                    .stream()
-                    .filter(arrival -> routeIds.contains(arrival.routeId()))
-                    .toList();
+                  .stream()
+                  .filter(arrival -> routeIds.contains(arrival.routeId()))
+                  .toList();
 
             // 경로가 버스로 시작하고 기준 시각이 지금이면 이미 승차 정류장에 있는 것
             boolean atStop = i == 0 && !startAt.isAfter(now);
@@ -387,9 +388,9 @@ public class RouteAnalysisService {
             || request.routes() == null
             || request.routes().isEmpty()
             || request.routes().stream().anyMatch(route ->
-                route == null
-                    || route.segments() == null
-                    || route.segments().stream().anyMatch(Objects::isNull))) {
+            route == null
+                || route.segments() == null
+                || route.segments().stream().anyMatch(Objects::isNull))) {
             throw new ResponseStatusException(
                 HttpStatus.BAD_REQUEST,
                 "후보 경로 정보가 올바르지 않습니다."
@@ -587,8 +588,39 @@ public class RouteAnalysisService {
         Integer totalMinIfMiss,
         String nextRouteLabel,
         OffsetDateTime nextBusArrivalAt,
+        Integer nextBusRemainSeats,
+        SeatType nextBusSeatType,
         OffsetDateTime dataBasisAt
     ) {
+        // 기존 17개 인자 생성자를 유지한다.
+        public SegmentView(
+            Integer segmentIndex,
+            String routeLabel,
+            String boardName,
+            OffsetDateTime predictedBusArrivalAt,
+            Integer slackMin,
+            Stage slackStage,
+            Integer remainSeats,
+            SeatType seatType,
+            Stage seatStage,
+            Stage boardingStage,
+            OffsetDateTime arriveIfBoard,
+            Integer totalMinIfBoard,
+            OffsetDateTime arriveIfMiss,
+            Integer totalMinIfMiss,
+            String nextRouteLabel,
+            OffsetDateTime nextBusArrivalAt,
+            OffsetDateTime dataBasisAt
+        ) {
+            this(
+                segmentIndex, routeLabel, boardName, predictedBusArrivalAt,
+                slackMin, slackStage, remainSeats, seatType, seatStage,
+                boardingStage, arriveIfBoard, totalMinIfBoard, arriveIfMiss,
+                totalMinIfMiss, nextRouteLabel, nextBusArrivalAt,
+                null, null, dataBasisAt
+            );
+        }
+
         public static SegmentView of(SegmentResult result) {
             return new SegmentView(
                 result.segmentIndex(),
@@ -607,6 +639,8 @@ public class RouteAnalysisService {
                 result.totalMinIfMiss(),
                 result.nextRouteLabel(),
                 seconds(result.nextBusArrivalAt()),
+                result.nextBusRemainSeats(),
+                result.nextBusSeatType(),
                 seconds(result.dataBasisAt())
             );
         }
@@ -617,7 +651,8 @@ public class RouteAnalysisService {
                 index, routeLabel, boardName, predictedBusArrivalAt,
                 slackMin, slackStage, remainSeats, seatType, seatStage,
                 boardingStage, arriveIfBoard, totalMinIfBoard, arriveIfMiss,
-                totalMinIfMiss, nextRouteLabel, nextBusArrivalAt, dataBasisAt
+                totalMinIfMiss, nextRouteLabel, nextBusArrivalAt,
+                nextBusRemainSeats, nextBusSeatType, dataBasisAt
             );
         }
 
@@ -630,7 +665,8 @@ public class RouteAnalysisService {
             return new SegmentView(
                 segmentIndex, routeLabel, boardName,
                 null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null
+                null, null, null, null, null, null, null,
+                null, null
             );
         }
     }

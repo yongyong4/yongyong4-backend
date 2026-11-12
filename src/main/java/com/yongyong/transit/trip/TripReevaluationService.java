@@ -3,6 +3,7 @@ package com.yongyong.transit.trip;
 
 import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteSegment;
 import com.yongyong.transit.strategy.service.StrategyService;
@@ -464,6 +465,30 @@ public class TripReevaluationService {
             );
         }
 
+        // BOARD_FAILED 직후 첫 유효한 재평가에서 예상 총 소요시간을 보존한다.
+        // migration: trip.failed_expected_min INT NULL
+        if (boardingFailed && current != null
+            && current.expectedArrivalAt() != null) {
+            OffsetDateTime startedAt = asTime(trip.get("started_at"));
+            if (startedAt != null) {
+                long minutes = Duration.between(
+                    startedAt, current.expectedArrivalAt()
+                ).toMinutes();
+                if (minutes >= 0 && minutes <= Integer.MAX_VALUE) {
+                    jdbc.update(
+                        """
+                        UPDATE trip
+                        SET failed_expected_min = ?
+                        WHERE trip_id = ?
+                          AND failed_expected_min IS NULL
+                        """,
+                        (int) minutes,
+                        tripId
+                    );
+                }
+            }
+        }
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("tripId", tripId);
         response.put("evaluationId", evaluationId);
@@ -483,16 +508,14 @@ public class TripReevaluationService {
             propose ? bestValue : null
         );
         response.put("savedMinutes", savedMin);
-        response.put(
-            "nextSegment",
-            current == null || current.analysis().isEmpty()
-                ? null
-                : current.analysis().get(0)
-        );
+        response.put("nextSegment", nextSegment(current));
         response.put("suggestion", suggestion);
+        Map<String, Object> wait = boardingFailed
+            ? waitOption(current) : null;
+        response.put("waitOption", wait);
         response.put(
-            "waitOption",
-            boardingFailed ? waitOption(current) : null
+            "failureOptions",
+            boardingFailed ? failureOptions(wait, suggestion) : null
         );
         response.put(
             "reason",
@@ -890,26 +913,101 @@ public class TripReevaluationService {
             : null;
     }
 
-    private Map<String, Object> waitOption(
-        StrategyView current
-    ) {
+    private Map<String, Object> nextSegment(StrategyView current) {
+        if (current == null || current.analysis().isEmpty()) {
+            return null;
+        }
+
+        // analysis()는 WALK를 포함하지 않고 BUS 구간만 반환한다.
+        SegmentView first = current.analysis().get(0);
+        Map<String, Object> next = new LinkedHashMap<>();
+        next.put("segmentIndex", first.segmentIndex());
+        next.put("routeLabel", first.routeLabel());
+        next.put("boardName", first.boardName());
+        next.put("predictedBusArrivalAt", first.predictedBusArrivalAt());
+        next.put("slackMin", first.slackMin());
+        next.put("slackStage", first.slackStage());
+        next.put("remainSeats", first.remainSeats());
+        next.put("seatType", first.seatType());
+        next.put("seatStage", first.seatStage());
+        next.put("boardingStage", first.boardingStage());
+        next.put("arriveIfBoard", first.arriveIfBoard());
+        next.put("totalMinIfBoard", first.totalMinIfBoard());
+        next.put("arriveIfMiss", first.arriveIfMiss());
+        next.put("totalMinIfMiss", first.totalMinIfMiss());
+        next.put("nextRouteLabel", first.nextRouteLabel());
+        next.put("nextBusArrivalAt", first.nextBusArrivalAt());
+        next.put("dataBasisAt", first.dataBasisAt());
+
+        // 다음 차량의 좌석 정보를 별도로 전달한다.
+        next.put("nextBusRemainSeats", first.nextBusRemainSeats());
+        next.put("nextBusSeatType", first.nextBusSeatType());
+        return next;
+    }
+
+    private Map<String, Object> waitOption(StrategyView current) {
         Map<String, Object> wait = new LinkedHashMap<>();
         wait.put("action", "WAIT_FOR_NEXT_BUS");
         wait.put("endpoint", "boarding-failure/wait");
-        wait.put(
-            "nextBusArrivalAt",
-            current == null ? null : current.busArrivalAt()
-        );
-        wait.put(
-            "boardingStage",
-            current == null ? null : current.strategyRiskStage()
-        );
-        wait.put(
-            "totalMin",
-            current == null ? null : current.totalMinIfBoard()
-        );
-
+        // BOARD_FAILED 상태에서는 current.busArrivalAt이 놓친 버스가
+        // 아니라 현재 시점에 새로 탈 수 있는 가장 빠른 버스다.
+        OffsetDateTime busAt = current == null
+            ? null : current.busArrivalAt();
+        Integer min = current == null
+            ? null : current.totalMinIfBoard();
+        wait.put("nextBusArrivalAt", busAt);
+        wait.put("busArrivalAt", busAt);
+        wait.put("expectedArrivalAt", current == null
+            ? null : current.expectedArrivalAt());
+        wait.put("totalMin", min);
+        wait.put("totalMinIfBoard", min);
+        wait.put("boardingStage", current == null
+            ? null : current.strategyRiskStage());
+        wait.put("strategyRiskStage", current == null
+            ? null : current.strategyRiskStage());
+        wait.put("remainSeats", current == null
+            ? null : current.remainSeats());
+        wait.put("seatType", current == null
+            ? null : current.seatType());
+        wait.put("routeLabel", firstBusRouteLabel(current));
+        wait.put("title", "다음 버스 기다리기");
         return wait;
+    }
+
+    private Map<String, Object> failureOptions(
+        Map<String, Object> wait,
+        ObjectNode suggestion
+    ) {
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("waitOption", wait);
+        options.put("alternativeOption", suggestion);
+        return options;
+    }
+
+    private String firstBusBoardName(StrategyView view) {
+        if (view == null || view.route() == null
+            || view.route().segments() == null) {
+            return null;
+        }
+        return view.route().segments().stream()
+            .filter(segment -> "BUS".equals(segment.mode()))
+            .map(TripSegment::boardName)
+            .filter(Objects::nonNull)
+            .findFirst()
+            .orElse(null);
+    }
+
+    private String firstBusRouteLabel(StrategyView view) {
+        if (view == null || view.route() == null
+            || view.route().segments() == null) {
+            return null;
+        }
+        return view.route().segments().stream()
+            .filter(segment -> "BUS".equals(segment.mode()))
+            .map(TripSegment::routeLabel)
+            .filter(Objects::nonNull)
+            .findFirst()
+            .orElse(null);
     }
 
     // 다른 노선이면 "N번으로 바꾸기", 같은 노선이면 "N번 타고 (하차 정류장)에서 내리기"
@@ -955,6 +1053,61 @@ public class TripReevaluationService {
         root.put("canAccept", true);
         root.put("savedMinutes", savedMin);
         root.put("title", title);
+        String routeLabel = firstBusRouteLabel(view);
+        if (routeLabel == null) {
+            root.putNull("routeLabel");
+        } else {
+            root.put("routeLabel", routeLabel);
+        }
+        String moveToName = view.moveToName() != null
+            ? view.moveToName() : firstBusBoardName(view);
+        if (moveToName == null) {
+            root.putNull("moveToName");
+        } else {
+            root.put("moveToName", moveToName);
+        }
+        if (view.moveToX() != null) {
+            root.put("moveToX", view.moveToX());
+        }
+        if (view.moveToY() != null) {
+            root.put("moveToY", view.moveToY());
+        }
+        root.put("extraWalkMin", view.extraWalkMin());
+        if (view.busArrivalAt() == null) {
+            root.putNull("busArrivalAt");
+        } else {
+            root.put("busArrivalAt", view.busArrivalAt().toString());
+        }
+        if (view.nextBusArrivalAt() == null) {
+            root.putNull("nextBusArrivalAt");
+        } else {
+            root.put("nextBusArrivalAt", view.nextBusArrivalAt().toString());
+        }
+        if (view.remainSeats() == null) {
+            root.putNull("remainSeats");
+        } else {
+            root.put("remainSeats", view.remainSeats());
+        }
+        if (view.seatType() == null) {
+            root.putNull("seatType");
+        } else {
+            root.put("seatType", view.seatType().name());
+        }
+        if (view.strategyRiskStage() == null) {
+            root.putNull("strategyRiskStage");
+        } else {
+            root.put("strategyRiskStage", view.strategyRiskStage().name());
+        }
+        if (view.totalMinIfBoard() == null) {
+            root.putNull("totalMinIfBoard");
+        } else {
+            root.put("totalMinIfBoard", view.totalMinIfBoard());
+        }
+        if (view.totalMinIfMiss() == null) {
+            root.putNull("totalMinIfMiss");
+        } else {
+            root.put("totalMinIfMiss", view.totalMinIfMiss());
+        }
         root.put(
             "reason",
             savedMin > 0
@@ -975,6 +1128,8 @@ public class TripReevaluationService {
         for (TripSegment segment : view.route().segments()) {
             ObjectNode node = segments.addObject();
 
+            node.put("segmentIndex", segment.segmentIndex());
+            node.put("seq", segment.seq());
             node.put("mode", segment.mode());
             node.put("matchStatus", segment.matchStatus());
 
