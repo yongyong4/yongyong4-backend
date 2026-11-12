@@ -1,0 +1,19 @@
+[Unit]
+Description=Yongyong backend (Spring Boot)
+After=network-online.target mariadb.service
+Wants=network-online.target
+Requires=mariadb.service
+
+[Service]
+User=yongyong
+WorkingDirectory=/opt/yongyong
+EnvironmentFile=/opt/yongyong/.env
+# 바깥에서는 Caddy(443)로만 들어오게 8080은 서버 안에서만 연다
+Environment=SERVER_ADDRESS=127.0.0.1
+ExecStart=/usr/bin/java -Xms256m -Xmx1g -Duser.timezone=Asia/Seoul -jar /opt/yongyong/app.jar
+Restart=always
+RestartSec=10
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
