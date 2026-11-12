@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -23,3 +24,58 @@ jobs:
           gradle-version: '8.14.3'
       - name: Build and test
         run: gradle clean test bootJar --no-daemon
+      - name: Upload jar
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: build/libs/*-SNAPSHOT.jar
+          retention-days: 3
+
+  # 테스트를 통과한 jar 를 오라클 서버에 올리고 재시작한다
+  # 통합 기간에는 develop 기준. 시연 전에 main 으로 바꾼다
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    steps:
+      - name: Download jar
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload and restart
+        env:
+          TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+        run: |
+          JAR=$(ls *.jar | head -1)
+          scp -i ~/.ssh/deploy_key "$JAR" "$TARGET:/tmp/app.jar"
+          # 새 jar 가 health UP 이 안 되면 이전 jar 로 되돌린다
+          ssh -i ~/.ssh/deploy_key "$TARGET" 'bash -s' <<'EOF'
+          set -euo pipefail
+          cd /opt/yongyong
+          sudo cp app.jar app.jar.prev
+          sudo install -o yongyong -g yongyong -m 644 /tmp/app.jar app.jar
+          rm /tmp/app.jar
+          sudo systemctl restart yongyong-backend
+          for i in $(seq 1 30); do
+            if curl -sf localhost:8080/actuator/health | grep -q '"UP"'; then
+              echo "배포 성공"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "health 확인 실패 → 이전 jar 로 복구"
+          sudo cp app.jar.prev app.jar
+          sudo systemctl restart yongyong-backend
+          exit 1
+          EOF
