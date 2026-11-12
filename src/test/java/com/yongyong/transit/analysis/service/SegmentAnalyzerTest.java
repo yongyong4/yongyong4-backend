@@ -129,6 +129,23 @@ class SegmentAnalyzerTest {
     }
 
     @Test
+    void 정류장에_있으면_여유는_OK지만_좌석과_오래된_데이터_판단은_유지() {
+        SegmentResult soon = analyzeAtStop(arrival("5005", "07:31", 10, SeatType.OBSERVED));
+        assertThat(soon.slackMin()).isEqualTo(1);
+        assertThat(soon.slackStage()).isEqualTo(Stage.OK);
+        assertThat(soon.boardingStage()).isEqualTo(Stage.OK);
+
+        SegmentResult noSeat = analyzeAtStop(arrival("5005", "07:31", 0, SeatType.PREDICTED));
+        assertThat(noSeat.boardingStage()).isEqualTo(Stage.RISK);
+
+        SegmentResult stale = analyzeAtStop(new BusArrival(
+            "228000175", "5005", "plate", at("07:31"), 10,
+            SeatType.OBSERVED, at("07:26"), "v1"
+        ));
+        assertThat(stale.slackStage()).isEqualTo(Stage.UNKNOWN);
+    }
+
+    @Test
     void 마지막이_아닌_버스구간은_하차시각과_목적지까지_총소요() {
         SegmentResult result = analyze(false, List.of(
             arrival("5005", "07:41", 10, SeatType.OBSERVED)
@@ -159,7 +176,16 @@ class SegmentAnalyzerTest {
         return analyzer.analyze(new SegmentInput(
             1, "5005", "동백2차",
             NOW, 9, 39, 4, lastBusSegment,
-            arrivals, NOW
+            arrivals, NOW, false
+        ));
+    }
+
+    // 이미 정류장에 있음: 도보 0분, 버스 39분, 하차 후 4분
+    private SegmentResult analyzeAtStop(BusArrival arrival) {
+        return analyzer.analyze(new SegmentInput(
+            1, "5005", "동백2차",
+            NOW, 0, 39, 4, true,
+            List.of(arrival), NOW, true
         ));
     }
 

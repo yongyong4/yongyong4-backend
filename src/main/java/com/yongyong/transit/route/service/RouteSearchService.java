@@ -124,12 +124,25 @@ public class RouteSearchService {
                             for (JsonNode lane : lanes) {
                                 busOptions.add(new BusOption(
                                         getText(lane, "busNo"),
-                                        getText(lane, "busLocalBlID")
+                                        getText(lane, "busLocalBlID"),
+                                        busType(getInteger(lane, "type"))
                                 ));
                             }
                         }
                     }
 
+                    String lineName = null;
+
+                    if (trafficType == 1) {
+                        JsonNode lane = subPath.path("lane").path(0);
+
+                        lineName = lineName(
+                                getInteger(lane, "subwayCode"),
+                                getText(lane, "name")
+                        );
+                    }
+
+                    // 도보 구간은 ODsay가 좌표를 주지 않아 null
                     segments.add(new SegmentInfo(
                             segmentIndex++,
                             mode,
@@ -139,6 +152,11 @@ public class RouteSearchService {
                             getText(subPath, "endName"),
                             getText(subPath, "startLocalStationID"),
                             getText(subPath, "endLocalStationID"),
+                            getDouble(subPath, "startX"),
+                            getDouble(subPath, "startY"),
+                            getDouble(subPath, "endX"),
+                            getDouble(subPath, "endY"),
+                            lineName,
                             busOptions
                     ));
                 }
@@ -159,6 +177,38 @@ public class RouteSearchService {
                 routes.size(),
                 routes
         );
+    }
+
+    // ODsay 버스 type → 프론트 노선 배지 이름
+    // 용인 5000번대는 직행좌석(4)으로 와서 광역(14)과 같이 광역으로 본다
+    static String busType(Integer type) {
+        if (type == null) {
+            return "일반";
+        }
+
+        return switch (type) {
+            case 4, 14 -> "광역";
+            case 3 -> "마을";
+            default -> "일반";
+        };
+    }
+
+    // ODsay 지하철 노선 → 프론트 노선 배지 이름
+    // 수인분당선은 ODsay 이름이 "수도권 수인.분당선"이라 코드로 맞춘다
+    static String lineName(Integer subwayCode, String name) {
+        if (subwayCode != null && subwayCode == 107) {
+            return "에버라인";
+        }
+
+        if (subwayCode != null && subwayCode == 116) {
+            return "수인분당";
+        }
+
+        if (name == null) {
+            return null;
+        }
+
+        return name.replaceFirst("^수도권\\s*", "");
     }
 
     private static String getText(
@@ -226,13 +276,19 @@ public class RouteSearchService {
             String endName,
             String startLocalStationId,
             String endLocalStationId,
+            Double startX,
+            Double startY,
+            Double endX,
+            Double endY,
+            String lineName,
             List<BusOption> busOptions
     ) {
     }
 
     public record BusOption(
             String busNo,
-            String localRouteId
+            String localRouteId,
+            String busType
     ) {
     }
 }

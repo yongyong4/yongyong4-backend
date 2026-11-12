@@ -2,7 +2,7 @@ package com.yongyong.transit.analysis.service;
 
 /**
  * 요청 1번 안에서 GBIS를 몇 번까지 부를지 세는 카운터 (캐시 사용은 세지 않음).
- * 요청마다 새로 만든다. 재평가처럼 GBIS를 부르면 안 되는 경우는 none()을 쓴다.
+ * 요청마다 새로 만든다. GBIS를 부르면 안 되는 경우(저장된 정보만 볼 때)는 none()을 쓴다.
  */
 public class CallBudget {
 
