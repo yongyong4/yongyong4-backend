@@ -1,0 +1,4 @@
+# 바깥 HTTPS(443) 요청을 백엔드(8080)로 넘긴다. 인증서는 Caddy 가 자동 발급·갱신
+yongyong4.duckdns.org {
+	reverse_proxy localhost:8080
+}
