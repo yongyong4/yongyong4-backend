@@ -291,8 +291,66 @@ public class TripLifecycleService {
         );
         response.put("boardingResults", boardingResults);
         response.put("routeChangeHistory", routeChangeHistory);
+        response.put(
+            "initialExpectedMin",
+            getInitialExpectedMin(tripId, startedAt)
+        );
+        // 탑승 실패 재평가 때 저장한 값(출발부터 총 소요 시간), 실패가 없으면 null
+        response.put(
+            "failedExpectedMin",
+            trip.get("failed_expected_min")
+        );
 
         return response;
+    }
+
+    // 3-0. 처음 고른 경로의 예상 소요 시간(분)
+    // 마지막 구간 도착 예정 시각 - 첫 구간 출발 예정 시각
+    // 첫 구간 출발 예정 시각이 없으면 이동 시작 시각을 기준으로 한다
+    private Long getInitialExpectedMin(
+        long tripId,
+        LocalDateTime startedAt
+    ) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+            """
+            SELECT
+                s.planned_start_at,
+                s.planned_end_at
+            FROM segment s
+            WHERE s.trip_route_id = (
+                SELECT MIN(trip_route_id)
+                FROM trip_route
+                WHERE trip_id = ?
+                  AND source = 'INITIAL'
+            )
+            ORDER BY s.seq ASC
+            """,
+            tripId
+        );
+
+        if (rows.isEmpty()) {
+            return null;
+        }
+
+        LocalDateTime plannedStart = asLocalDateTime(
+            rows.get(0).get("planned_start_at")
+        );
+
+        LocalDateTime plannedEnd = asLocalDateTime(
+            rows.get(rows.size() - 1).get("planned_end_at")
+        );
+
+        LocalDateTime base = plannedStart != null
+            ? plannedStart
+            : startedAt;
+
+        if (base == null || plannedEnd == null) {
+            return null;
+        }
+
+        long minutes = ChronoUnit.MINUTES.between(base, plannedEnd);
+
+        return minutes >= 0 ? minutes : null;
     }
 
     // 3-1. 버스 구간별 탑승 성공·실패 기록
@@ -546,6 +604,7 @@ public class TripLifecycleService {
                     end_type,
                     near_dest_at,
                     expected_arrival_at,
+                    failed_expected_min,
                     summary_shown
                 FROM trip
                 WHERE trip_id = ?
