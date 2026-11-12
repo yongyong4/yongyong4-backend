@@ -939,10 +939,9 @@ public class TripReevaluationService {
         next.put("nextBusArrivalAt", first.nextBusArrivalAt());
         next.put("dataBasisAt", first.dataBasisAt());
 
-        // 다음 차량 좌석 정보는 현재 공개 SegmentView에 없다.
-        // 현재 차량의 remainSeats/seatType을 복사하면 안 된다.
-        next.put("nextBusRemainSeats", null);
-        next.put("nextBusSeatType", null);
+        // 다음 차량의 좌석 정보를 별도로 전달한다.
+        next.put("nextBusRemainSeats", first.nextBusRemainSeats());
+        next.put("nextBusSeatType", first.nextBusSeatType());
         return next;
     }
 

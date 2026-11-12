@@ -1,3 +1,4 @@
+
 package com.yongyong.transit.analysis.service;
 
 import org.springframework.stereotype.Component;
@@ -76,6 +77,8 @@ public class SegmentAnalyzer {
             next == null ? null : minutesBetween(input.now(), finalIfMiss),
             next == null ? null : next.routeLabel(),
             next == null ? null : next.arrivalAt(),
+            next == null ? null : next.remainSeats(),
+            next == null ? null : next.seatType(),
             board.dataBasisAt(),
             board.plateNo(),
             board.modelVersion(),
@@ -95,6 +98,8 @@ public class SegmentAnalyzer {
             SeatType.NONE,
             Stage.UNKNOWN,
             Stage.CAUTION,
+            null,
+            null,
             null,
             null,
             null,
@@ -266,10 +271,43 @@ public class SegmentAnalyzer {
         Integer totalMinIfMiss,
         String nextRouteLabel,
         OffsetDateTime nextBusArrivalAt,
+        Integer nextBusRemainSeats,
+        SeatType nextBusSeatType,
         OffsetDateTime dataBasisAt,
         String plateNo,
         String modelVersion,
         String routeId
     ) {
+        // 기존 20개 인자 생성자도 유지해 다른 서비스의 호출과 호환한다.
+        public SegmentResult(
+            int segmentIndex,
+            String routeLabel,
+            String boardName,
+            OffsetDateTime predictedBusArrivalAt,
+            Integer slackMin,
+            Stage slackStage,
+            Integer remainSeats,
+            SeatType seatType,
+            Stage seatStage,
+            Stage boardingStage,
+            OffsetDateTime arriveIfBoard,
+            Integer totalMinIfBoard,
+            OffsetDateTime arriveIfMiss,
+            Integer totalMinIfMiss,
+            String nextRouteLabel,
+            OffsetDateTime nextBusArrivalAt,
+            OffsetDateTime dataBasisAt,
+            String plateNo,
+            String modelVersion,
+            String routeId
+        ) {
+            this(
+                segmentIndex, routeLabel, boardName, predictedBusArrivalAt,
+                slackMin, slackStage, remainSeats, seatType, seatStage,
+                boardingStage, arriveIfBoard, totalMinIfBoard, arriveIfMiss,
+                totalMinIfMiss, nextRouteLabel, nextBusArrivalAt,
+                null, null, dataBasisAt, plateNo, modelVersion, routeId
+            );
+        }
     }
 }
