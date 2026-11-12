@@ -2,6 +2,7 @@
 package com.yongyong.transit.trip;
 
 import com.yongyong.transit.analysis.service.RouteAnalysisService.RouteInput;
+import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
 import com.yongyong.transit.strategy.service.StrategyService;
 import com.yongyong.transit.strategy.service.StrategyService.Mode;
 import com.yongyong.transit.strategy.service.StrategyService.StrategyResponse;
@@ -48,6 +49,7 @@ class TripReevaluationServiceTest {
     private JsonMapper mapper;
     private StrategyService strategies;
     private TripReevaluationService service;
+    private Map<String, Object> tripRow;
 
     @BeforeEach
     void setUp() {
@@ -61,11 +63,15 @@ class TripReevaluationServiceTest {
             strategies
         );
 
-        Map<String, Object> trip = new HashMap<>();
+        tripRow = new HashMap<>();
+        Map<String, Object> trip = tripRow;
         trip.put("trip_id", TRIP_ID);
         trip.put("current_route_id", ROUTE_ID);
         trip.put("current_status", "WAITING");
         trip.put("ended_at", null);
+        trip.put("started_at", Timestamp.valueOf(
+            LocalDateTime.now(KST).minusMinutes(10)
+        ));
 
         trip.put("alt_routes_json", """
             [
@@ -175,6 +181,64 @@ class TripReevaluationServiceTest {
 
         assertThat(suggestion.path("route")
             .path("segments").size()).isGreaterThan(0);
+        assertThat(suggestion.path("route").path("segments")
+            .get(0).path("seq").asInt()).isEqualTo(1);
+        assertThat(suggestion.path("routeLabel").asText())
+            .isEqualTo("MOCK_ALT");
+        assertThat(suggestion.path("moveToName").asText())
+            .isEqualTo("모의 승차 정류장");
+        assertThat(suggestion.path("extraWalkMin").asInt()).isZero();
+        assertThat(suggestion.path("busArrivalAt").asText())
+            .isNotBlank();
+        assertThat(suggestion.path("remainSeats").isNull()).isTrue();
+        assertThat(suggestion.path("seatType").isNull()).isTrue();
+    }
+
+    @Test
+    void nextSegmentProvidesNextBusArrivalWithoutCopyingSeatCount() {
+        mockStrategyResult(30, 20, true, true);
+
+        Map<String, Object> result = reevaluate();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> next =
+            (Map<String, Object>) result.get("nextSegment");
+
+        assertThat(next).isNotNull();
+        assertThat(next.get("nextBusArrivalAt")).isNotNull();
+        assertThat(next).containsKey("nextBusRemainSeats");
+        assertThat(next.get("nextBusRemainSeats")).isNull();
+        assertThat(next.get("nextBusSeatType")).isNull();
+    }
+
+    @Test
+    void failureOptionsPreserveWaitAndAlternativeAndSnapshotDuration() {
+        tripRow.put("current_status", "BOARD_FAILED");
+        mockStrategyResult(30, 20, true, true);
+
+        Map<String, Object> result = reevaluate();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> failure =
+            (Map<String, Object>) result.get("failureOptions");
+        assertThat(failure).isNotNull();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> wait =
+            (Map<String, Object>) failure.get("waitOption");
+        assertThat(wait).isNotNull();
+        assertThat(wait.get("nextBusArrivalAt")).isNotNull();
+        assertThat(wait.get("expectedArrivalAt")).isNotNull();
+        assertThat(wait.get("totalMin")).isEqualTo(30);
+        assertThat(wait.get("remainSeats")).isNull();
+        assertThat(failure.get("alternativeOption")).isNotNull();
+        assertThat(result.get("waitOption")).isSameAs(wait);
+
+        verify(jdbc).update(
+            contains("failed_expected_min"),
+            anyInt(),
+            eq(TRIP_ID)
+        );
     }
 
     // 3. 대안의 실시간 버스 도착 근거가 없으면 추천 금지
@@ -298,7 +362,7 @@ class TripReevaluationServiceTest {
             minutes,
             minutes,
             minutes,
-            null,
+            OffsetDateTime.now(KST).plusMinutes(minutes),
             null,
             null,
             arrival,
@@ -306,7 +370,25 @@ class TripReevaluationServiceTest {
             null,
             List.of("모의 테스트"),
             new TripRoute(List.of(segment)),
-            List.of()
+            List.of(new SegmentView(
+                0,
+                busId,
+                "모의 승차 정류장",
+                arrival,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                busId,
+                OffsetDateTime.now(KST).plusMinutes(15),
+                OffsetDateTime.now(KST)
+            ))
         );
     }
 }
