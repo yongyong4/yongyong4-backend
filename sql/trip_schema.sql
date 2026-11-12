@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS trip (
     end_type VARCHAR(20) NULL,
     near_dest_at DATETIME NULL,
     expected_arrival_at DATETIME NULL,
+    failed_expected_min INT NULL,
     last_suggested_at DATETIME NULL,
     summary_shown BOOLEAN NOT NULL DEFAULT FALSE,
     alt_routes_json JSON NULL,
