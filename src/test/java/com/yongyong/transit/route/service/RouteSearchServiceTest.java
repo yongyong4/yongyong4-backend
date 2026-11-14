@@ -25,6 +25,10 @@ class RouteSearchServiceTest {
                  "startName":"동백2동행정복지센터","endName":"신분당선강남역",
                  "startX":127.151703,"startY":37.272129,"endX":127.028595,"endY":37.495849,
                  "startLocalStationID":"228000171","endLocalStationID":"121000009",
+                 "passStopList":{"stations":[
+                   {"index":0,"stationName":"동백2동행정복지센터","x":"127.151703","y":"37.272129"},
+                   {"index":1,"stationName":"좌표없음"},
+                   {"index":2,"stationName":"신분당선강남역","x":"127.028595","y":"37.495849"}]},
                  "lane":[{"busNo":"5003A","type":4,"busLocalBlID":"228000431"},
                          {"busNo":"33-2","type":3,"busLocalBlID":"241424015"}]}
                ]},
@@ -74,6 +78,17 @@ class RouteSearchServiceTest {
     }
 
     @Test
+    void busSegmentHasPassStopsInOrder() {
+        SegmentInfo bus = search().get(0).segments().get(1);
+
+        assertThat(bus.passStops())
+                .extracting(RouteSearchService.PassStop::name)
+                .containsExactly("동백2동행정복지센터", "신분당선강남역");
+        assertThat(bus.passStops().get(0).x()).isEqualTo(127.151703);
+        assertThat(bus.passStops().get(0).y()).isEqualTo(37.272129);
+    }
+
+    @Test
     void walkSegmentHasNoCoordinates() {
         SegmentInfo walk = search().get(0).segments().get(0);
 
@@ -81,6 +96,7 @@ class RouteSearchServiceTest {
         assertThat(walk.endY()).isNull();
         assertThat(walk.lineName()).isNull();
         assertThat(walk.busOptions()).isEmpty();
+        assertThat(walk.passStops()).isEmpty();
     }
 
     @Test
