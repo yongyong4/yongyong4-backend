@@ -33,10 +33,10 @@ jobs:
           retention-days: 3
 
   # 테스트를 통과한 jar 를 오라클 서버에 올리고 재시작한다
-  # 통합 기간에는 develop 기준. 시연 전에 main 으로 바꾼다
+  # 시연용으로 main 기준. develop 머지는 테스트만 하고 배포하지 않는다
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     concurrency: deploy
     steps:
