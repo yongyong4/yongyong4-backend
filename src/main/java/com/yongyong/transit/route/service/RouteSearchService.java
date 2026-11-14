@@ -142,7 +142,7 @@ public class RouteSearchService {
                         );
                     }
 
-                    // 도보 구간은 ODsay가 좌표를 주지 않아 null
+                    // 도보 구간은 ODsay가 좌표를 주지 않아 null, passStops는 빈 배열
                     segments.add(new SegmentInfo(
                             segmentIndex++,
                             mode,
@@ -157,7 +157,8 @@ public class RouteSearchService {
                             getDouble(subPath, "endX"),
                             getDouble(subPath, "endY"),
                             lineName,
-                            busOptions
+                            busOptions,
+                            passStops(subPath)
                     ));
                 }
             }
@@ -177,6 +178,56 @@ public class RouteSearchService {
                 routes.size(),
                 routes
         );
+    }
+
+    // 버스·지하철 구간이 지나는 정류장(역) 좌표, 탑승 정류장부터 하차 정류장까지 순서대로
+    // 지도에서 이 점들을 이어 경로 선을 그린다 (추가 ODsay 호출 없음)
+    private static List<PassStop> passStops(JsonNode subPath) {
+        JsonNode stations = subPath.path("passStopList").path("stations");
+        List<PassStop> stops = new ArrayList<>();
+
+        if (!stations.isArray()) {
+            return stops;
+        }
+
+        for (JsonNode station : stations) {
+            Double x = getCoordinate(station, "x");
+            Double y = getCoordinate(station, "y");
+
+            if (x == null || y == null) {
+                continue;
+            }
+
+            stops.add(new PassStop(
+                    getText(station, "stationName"),
+                    x,
+                    y
+            ));
+        }
+
+        return stops;
+    }
+
+    // ODsay 정류장 좌표는 "127.15" 처럼 문자열로 온다
+    private static Double getCoordinate(
+            JsonNode parent,
+            String fieldName
+    ) {
+        JsonNode node = parent.path(fieldName);
+
+        if (node.isNumber()) {
+            return node.asDouble();
+        }
+
+        if (!node.isString()) {
+            return null;
+        }
+
+        try {
+            return Double.parseDouble(node.asString().trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     // ODsay 버스 type → 프론트 노선 배지 이름
@@ -281,7 +332,8 @@ public class RouteSearchService {
             Double endX,
             Double endY,
             String lineName,
-            List<BusOption> busOptions
+            List<BusOption> busOptions,
+            List<PassStop> passStops
     ) {
     }
 
@@ -289,6 +341,13 @@ public class RouteSearchService {
             String busNo,
             String localRouteId,
             String busType
+    ) {
+    }
+
+    public record PassStop(
+            String name,
+            double x,
+            double y
     ) {
     }
 }
