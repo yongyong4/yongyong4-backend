@@ -1,6 +1,8 @@
 
 package com.yongyong.transit.trip;
 
+import com.yongyong.transit.demo.DemoClock;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -25,6 +27,18 @@ import java.util.Set;
 
 @Service
 public class TripDecisionService {
+
+    @Autowired(required = false)
+    private DemoClock demoClock;
+
+    private LocalDateTime currentLocalNow() {
+        return demoClock == null
+            ? LocalDateTime.now(KST).withNano(0)
+            : demoClock.now()
+                .atZoneSameInstant(KST)
+                .toLocalDateTime()
+                .withNano(0);
+    }
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
 
@@ -153,9 +167,7 @@ public class TripDecisionService {
             );
         }
 
-        Timestamp respondedAt = Timestamp.valueOf(
-            LocalDateTime.now(KST)
-        );
+        Timestamp respondedAt = Timestamp.valueOf(currentLocalNow());
 
         // 무시: 현재 경로 유지
         if (!accepted) {

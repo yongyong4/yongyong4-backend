@@ -1,6 +1,9 @@
 
 package com.yongyong.transit.trip;
 
+import com.yongyong.transit.demo.DemoClock;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -25,6 +28,16 @@ import java.util.Map;
 @Service
 @EnableScheduling
 public class TripLifecycleService {
+
+    @Autowired(required = false)
+    private DemoClock demoClock;
+
+    private LocalDateTime currentLocalNow() {
+        return demoClock == null
+            ? LocalDateTime.now(KST)
+            : demoClock.now().atZoneSameInstant(KST).toLocalDateTime();
+    }
+
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
     private static final int AUTO_END_DELAY_MIN = 30;
@@ -118,7 +131,7 @@ public class TripLifecycleService {
     public void autoEndOverdueTrips() {
 
         Timestamp threshold = Timestamp.valueOf(
-            LocalDateTime.now(KST)
+            currentLocalNow()
                 .minusMinutes(AUTO_END_DELAY_MIN)
         );
 
@@ -173,7 +186,7 @@ public class TripLifecycleService {
             return;
         }
 
-        LocalDateTime currentTime = LocalDateTime.now(KST);
+        LocalDateTime currentTime = currentLocalNow();
 
         LocalDateTime deadline = expectedArrivalAt
             .plusMinutes(AUTO_END_DELAY_MIN);
@@ -642,7 +655,7 @@ public class TripLifecycleService {
     }
 
     private Timestamp now() {
-        return Timestamp.valueOf(LocalDateTime.now(KST));
+        return Timestamp.valueOf(currentLocalNow());
     }
 
     // MySQL DATETIME은 LocalDateTime으로 반환될 수 있음

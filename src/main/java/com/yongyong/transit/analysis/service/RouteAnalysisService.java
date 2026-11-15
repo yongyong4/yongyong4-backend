@@ -1,6 +1,9 @@
 
 package com.yongyong.transit.analysis.service;
 
+import com.yongyong.transit.demo.DemoClock;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import com.yongyong.transit.analysis.service.BusRealtimeService.CollectorSnapshot;
 import com.yongyong.transit.analysis.service.BusRealtimeService.StationArrivals;
 import com.yongyong.transit.analysis.service.SegmentAnalyzer.BusArrival;
@@ -33,6 +36,16 @@ import java.util.Set;
 @Service
 public class RouteAnalysisService {
 
+    @Autowired(required = false)
+    private DemoClock demoClock;
+
+    private OffsetDateTime currentNow() {
+        return demoClock == null
+            ? OffsetDateTime.now(ZoneOffset.ofHours(9))
+            : demoClock.now();
+    }
+
+
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
     private static final long DELAYED_SECONDS = 240;
 
@@ -57,7 +70,7 @@ public class RouteAnalysisService {
     public AnalysisResponse analyze(AnalysisRequest request) {
         return analyze(
             request,
-            OffsetDateTime.now(KST).truncatedTo(ChronoUnit.SECONDS)
+            currentNow().truncatedTo(ChronoUnit.SECONDS)
         );
     }
 

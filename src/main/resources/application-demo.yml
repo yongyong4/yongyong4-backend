@@ -1,0 +1,16 @@
+server:
+  address: 127.0.0.1
+  port: 18080
+
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/yongyong_demo?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: ${DEMO_DB_USERNAME}
+    password: ${DEMO_DB_PASSWORD}
+
+  sql:
+    init:
+      mode: never
+
+demo:
+  enabled: true

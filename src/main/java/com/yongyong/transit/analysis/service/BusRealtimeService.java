@@ -1,5 +1,8 @@
 package com.yongyong.transit.analysis.service;
 
+import com.yongyong.transit.demo.DemoScenarioData;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import com.yongyong.transit.analysis.client.GbisClient;
 import com.yongyong.transit.analysis.client.GbisClient.GbisArrivals;
 import com.yongyong.transit.analysis.client.GbisClient.GbisBus;
@@ -36,6 +39,10 @@ import java.util.stream.Collectors;
 @Service
 public class BusRealtimeService {
 
+    @Autowired(required = false)
+    private DemoScenarioData demoScenarioData;
+
+
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
     private static final long CACHE_SECONDS = 60;
     private static final long COLLECTOR_FRESH_SECONDS = 240;
@@ -67,6 +74,10 @@ public class BusRealtimeService {
      * 수집 노선 목록(예측 대상 판단용)은 신선도와 상관없이 함께 담는다.
      */
     public CollectorSnapshot loadCollectorSnapshot(OffsetDateTime now) {
+        if (demoScenarioData != null) {
+            return demoScenarioData.snapshot(now);
+        }
+
         try {
             Map<String, String> routeIdByName = new HashMap<>();
 
@@ -151,6 +162,10 @@ public class BusRealtimeService {
         OffsetDateTime now,
         CallBudget budget
     ) {
+        if (demoScenarioData != null) {
+            return demoScenarioData.getArrivals(stationId, routeIds, now);
+        }
+
         List<BusArrival> arrivals = new ArrayList<>();
         List<OffsetDateTime> basisTimes = new ArrayList<>();
         boolean delayed = false;

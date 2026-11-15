@@ -1,6 +1,9 @@
 
 package com.yongyong.transit.trip;
 
+import com.yongyong.transit.demo.DemoClock;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.BusOption;
 import com.yongyong.transit.analysis.service.RouteAnalysisService.SegmentView;
@@ -46,6 +49,16 @@ import java.util.UUID;
 @Service
 public class TripReevaluationService {
 
+    @Autowired(required = false)
+    private DemoClock demoClock;
+
+    private OffsetDateTime currentNow() {
+        return demoClock == null
+            ? OffsetDateTime.now(ZoneOffset.ofHours(9))
+            : demoClock.now();
+    }
+
+
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
     private static final Set<String> TRIGGERS = Set.of(
         "AUTO", "REFRESH", "STATUS_CHANGE", "RESUME"
@@ -90,7 +103,7 @@ public class TripReevaluationService {
         Location location = location(
             request == null ? null : request.path("currentLocation")
         );
-        OffsetDateTime now = OffsetDateTime.now(KST).withNano(0);
+        OffsetDateTime now = currentNow().withNano(0);
 
         Map<String, Object> trip = ownedTrip(deviceId, tripId);
         if (trip.get("ended_at") != null) {
@@ -564,7 +577,7 @@ public class TripReevaluationService {
         Object segmentId = failures.isEmpty()
             ? null : failures.get(0).get("segment_id");
 
-        Timestamp now = timestamp(OffsetDateTime.now(KST));
+        Timestamp now = timestamp(currentNow());
 
         jdbc.update(
             """

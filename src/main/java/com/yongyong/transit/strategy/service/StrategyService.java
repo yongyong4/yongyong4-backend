@@ -1,5 +1,8 @@
 package com.yongyong.transit.strategy.service;
 
+import com.yongyong.transit.demo.DemoClock;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import com.yongyong.transit.analysis.service.BusRealtimeService;
 import com.yongyong.transit.analysis.service.CallBudget;
 import com.yongyong.transit.analysis.service.RouteAnalysisService;
@@ -42,6 +45,16 @@ import static com.yongyong.transit.analysis.service.RouteAnalysisService.seconds
 @Service
 public class StrategyService {
 
+    @Autowired(required = false)
+    private DemoClock demoClock;
+
+    private OffsetDateTime currentNow() {
+        return demoClock == null
+            ? OffsetDateTime.now(ZoneOffset.ofHours(9))
+            : demoClock.now();
+    }
+
+
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
     private static final int CALL_LIMIT_PER_REQUEST = 20;
 
@@ -73,7 +86,7 @@ public class StrategyService {
     public StrategyResponse strategies(StrategyRequest request) {
         return strategies(
             request,
-            OffsetDateTime.now(KST).truncatedTo(ChronoUnit.SECONDS)
+            currentNow().truncatedTo(ChronoUnit.SECONDS)
         );
     }
 
